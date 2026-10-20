@@ -21,6 +21,23 @@ npm test         # Run the game-rule tests; requires Bun
 
 Deploy `dist/` to any static web host. Assets and fonts are bundled locally; there are no external runtime APIs or analytics.
 
+## GitHub Pages
+
+Live site: **https://gitaashishg.github.io/imposter/**
+
+The repository is public so GitHub Pages is available on the current GitHub plan. `.github/workflows/deploy.yml` deploys the site on every push to `main`, or manually through **Actions → Deploy to GitHub Pages → Run workflow**. Pages uses **GitHub Actions** as its publishing source.
+
+The workflow installs the locked dependencies with Node.js 22, type-checks the app, and builds with the repository name as Vite’s base path (`/imposter/`). It then uploads `dist/` and deploys it to Pages. Local development and ordinary builds still use `/`.
+
+To preview the Pages build locally:
+
+```sh
+npm run build -- --base=/imposter/
+npm run preview -- --base=/imposter/
+```
+
+Open the printed URL ending in `/imposter/`. If the repository is renamed, the workflow automatically uses the new name; update the site links and preview commands here too.
+
 ## Play
 
 1. Add 3–12 unique player names. Choose word packs, 3/5/7 rounds, and a 30/60/90/120-second discussion timer.
