@@ -2,6 +2,12 @@
 
 A mobile-first imposter game for Nepali-American get-togethers. Choose **Pass & Play** on one shared phone, or **Own Phones** for a synchronized in-person party. The React/TypeScript/Vite website stays on GitHub Pages; a Cloudflare Worker and one SQLite-backed Durable Object run multiplayer. No player email/password accounts.
 
+## Modes and appearance
+
+The prominent **Pass & Play / Own Phones** selector below the header is available in both modes. Switching away from an active shared-phone game asks for confirmation before clearing its scores. Switching away from an own-phone party does not end it; returning in the same browser restores your seat.
+
+Use the **moon/sun button** in either header to change light or dark mode. The site initially follows your device appearance, including changes while it is open. Once you choose a theme, that choice is remembered on this browser across refreshes, visits, and both modes. Other open tabs in the same browser update too. If browser storage is unavailable, changing the theme still works for the current visit.
+
 ## Run locally
 
 Requires Node.js 22.12+.
@@ -98,7 +104,7 @@ Edit `src/data.ts` to adjust words and translations. IDs must stay unique. Words
 
 **Pass & Play:** role and ballot handoffs remove private content from the rendered page. Leaving the tab or opening help/standings hides an exposed role or ballot. Only aggregate vote counts are displayed after voting, not individual ballots.
 
-Only local setup preferences are stored for Pass & Play. Its roles, votes, scores, and match progress stay in memory; **refreshing or closing the page ends that shared-phone match**. This local mode is not a security boundary against someone inspecting the browser’s developer tools.
+Local setup preferences and your appearance choice are stored for Pass & Play. Its roles, votes, scores, and match progress stay in memory; **refreshing or closing the page ends that shared-phone match**. This local mode is not a security boundary against someone inspecting the browser’s developer tools.
 
 **Own Phones:** Cloudflare stores the party’s names, settings, roles, votes, scores, and progress until the host ends it or it expires. Each device receives only its own role before the public result; individual ballot targets are never included in client snapshots. The host has management controls, not permission to read other players’ secrets. Server authorization checks every action, including host status, phase, round, speaker, and duplicate votes.
 
@@ -117,6 +123,9 @@ A cryptographically random device token is saved in this browser’s local stora
 - `src/App.tsx`: Pass & Play shell and privacy events
 - `src/styles.css`: responsive styling and reduced-motion support
 - `src/RootApp.tsx`: mode switching and shareable `?mode=party` entry
+- `src/PlayModeSwitch.tsx`: shared, guarded mode-selection control
+- `src/Appearance.tsx`: system-aware theme preference and header toggle
+- `src/theme.css`, `src/appearance.css`: light/dark palette and global controls
 - `src/party/protocol.ts`: shared HTTP/WebSocket snapshots and commands
 - `src/party/useParty.ts`: authenticated transport and saved-device reconnect
 - `src/party/PartyApp.tsx`, `PartyScreens.tsx`, `party.css`: Own Phones UI

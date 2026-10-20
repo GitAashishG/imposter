@@ -6,10 +6,15 @@ import "@fontsource-variable/fraunces/wght-italic.css";
 import "@fontsource/noto-sans-devanagari/400.css";
 import "@fontsource/noto-sans-devanagari/600.css";
 import RootApp from "./RootApp";
+import { ThemeProvider } from "./Appearance";
+import "./theme.css";
 import "./styles.css";
+import "./appearance.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <RootApp />
+    <ThemeProvider>
+      <RootApp />
+    </ThemeProvider>
   </React.StrictMode>,
 );

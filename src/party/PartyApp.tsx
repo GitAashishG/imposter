@@ -27,6 +27,8 @@ import {
   PrivateRoleCard,
 } from "./PartyScreens";
 import "./party.css";
+import { PlayModeSwitch } from "../PlayModeSwitch";
+import { ThemeToggle } from "../Appearance";
 
 type PartyDialog =
   | { kind: "rules" | "scores" | "abort" | "end" | "leave" | "local" }
@@ -131,7 +133,6 @@ export default function PartyApp({ onLocal }: { onLocal: () => void }) {
           </span>
         </div>
         <nav className="party-header-actions" aria-label="Party navigation">
-          <span className="party-mode-label">OWN PHONES</span>
           <button
             type="button"
             className="party-header-button"
@@ -150,18 +151,18 @@ export default function PartyApp({ onLocal }: { onLocal: () => void }) {
               <span>Scores</span>
             </button>
           )}
-          <button
-            type="button"
-            className="party-header-button"
-            onClick={() =>
-              session ? openDialog({ kind: "local" }) : onLocal()
-            }
-          >
-            <ArrowLeft size={17} />
-            <span>Pass &amp; Play</span>
-          </button>
+          <ThemeToggle />
         </nav>
       </header>
+      <PlayModeSwitch
+        mode="party"
+        onChange={(next) => {
+          if (next === "local") {
+            if (session) openDialog({ kind: "local" });
+            else onLocal();
+          }
+        }}
+      />
 
       <main className="party-main">
         {error && (

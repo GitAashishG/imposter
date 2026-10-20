@@ -28,8 +28,8 @@ export function Eyes({ className = "" }: { className?: string }) {
         transform="rotate(10 80 35)"
         fill="currentColor"
       />
-      <ellipse cx="47" cy="44" rx="8" ry="12" fill="var(--ink)" />
-      <ellipse cx="88" cy="36" rx="8" ry="12" fill="var(--ink)" />
+      <ellipse cx="47" cy="44" rx="8" ry="12" fill="var(--brand-ink)" />
+      <ellipse cx="88" cy="36" rx="8" ry="12" fill="var(--brand-ink)" />
     </svg>
   );
 }

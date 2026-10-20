@@ -4,7 +4,6 @@ import {
   CircleHelp,
   RotateCcw,
   ShieldCheck,
-  Smartphone,
   Trophy,
 } from "lucide-react";
 import Setup, { loadPreferences, savePreferences } from "./Setup";
@@ -21,11 +20,15 @@ import {
   RoundResult,
 } from "./GameScreen";
 import { useGame } from "./useGame";
+import { PlayModeSwitch } from "./PlayModeSwitch";
+import { ThemeToggle } from "./Appearance";
 
 export default function App({ onParty }: { onParty: () => void }) {
   const [state, dispatch] = useGame();
   const [preferences, setPreferences] = useState(loadPreferences);
-  const [modal, setModal] = useState<"rules" | "scores" | "reset" | null>(null);
+  const [modal, setModal] = useState<
+    "rules" | "scores" | "reset" | "switch" | null
+  >(null);
   const playing = state.phase !== "setup";
   const match = "match" in state ? state.match : null;
 
@@ -54,7 +57,7 @@ export default function App({ onParty }: { onParty: () => void }) {
     "revealed" in state ? state.revealed : null,
   ]);
 
-  function showModal(value: "rules" | "scores" | "reset") {
+  function showModal(value: "rules" | "scores" | "reset" | "switch") {
     dispatch({ type: "HIDE" });
     setModal(value);
   }
@@ -78,12 +81,6 @@ export default function App({ onParty }: { onParty: () => void }) {
           </span>
         </div>
         <div className="header-actions">
-          {!playing && (
-            <button className="header-button" onClick={onParty}>
-              <Smartphone size={17} />
-              <span>Own phones</span>
-            </button>
-          )}
           {playing && (
             <button
               className="header-button"
@@ -97,11 +94,21 @@ export default function App({ onParty }: { onParty: () => void }) {
             <CircleHelp size={17} />
             <span>How to play</span>
           </button>
+          <ThemeToggle />
           {!playing && (
             <span className="header-label">A GAME FOR YOUR PEOPLE</span>
           )}
         </div>
       </header>
+      <PlayModeSwitch
+        mode="local"
+        onChange={(next) => {
+          if (next === "party") {
+            if (playing) showModal("switch");
+            else onParty();
+          }
+        }}
+      />
 
       {state.phase === "setup" ? (
         <Setup initial={preferences} onStart={start} />
@@ -231,6 +238,23 @@ export default function App({ onParty }: { onParty: () => void }) {
               }}
             >
               <RotateCcw size={16} /> Start fresh
+            </button>
+          </div>
+        </Modal>
+      )}
+      {modal === "switch" && (
+        <Modal title="Switch to Own Phones?" onClose={() => setModal(null)}>
+          <p className="modal-description">
+            Switching ends this shared-phone game and clears its scores. Your
+            saved names and setup will stay. Everyone can then join the
+            own-phone party on their own device.
+          </p>
+          <div className="modal-actions">
+            <button className="secondary-button" onClick={() => setModal(null)}>
+              Keep playing
+            </button>
+            <button className="danger-button" onClick={onParty}>
+              Switch to Own Phones
             </button>
           </div>
         </Modal>
