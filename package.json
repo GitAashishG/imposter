@@ -1,0 +1,28 @@
+{
+  "name": "ko-ho",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@fontsource-variable/dm-sans": "^5.2.6",
+    "@fontsource-variable/fraunces": "^5.2.6",
+    "@fontsource/noto-sans-devanagari": "^5.2.6",
+    "lucide-react": "^0.468.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.22",
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.3",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.7"
+  }
+}
