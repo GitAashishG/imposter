@@ -3,6 +3,9 @@ import {
   ArrowLeft,
   CircleHelp,
   DoorOpen,
+  History,
+  Home,
+  QrCode,
   Settings2,
   ShieldCheck,
   Trophy,
@@ -14,7 +17,9 @@ import { Eyes, Modal, Scoreboard } from "../components";
 import { DeviceOptions } from "../DeviceOptions";
 import { PlayModeSwitch } from "../PlayModeSwitch";
 import { ThemeToggle } from "../Appearance";
-import { useParty } from "./useParty";
+import { HistoryPanel } from "../HistoryPanel";
+import { InviteLink } from "../InviteLink";
+import { PARTY_API_URL, useParty } from "./useParty";
 import { formatRecoveryCode, generatePin } from "./joining";
 import type { PartyCommand, PartyPlayer } from "./protocol";
 import {
@@ -36,9 +41,10 @@ import {
 import "./party.css";
 
 type PartyDialog =
-  | { kind: "rules" | "scores" | "local" }
+  | { kind: "rules" | "scores" | "local" | "home" }
+  | { kind: "invite" | "history"; gameId: string; partyId: string; roomCode: string }
   | { kind: "manage" | "new-game" | "end" | "leave" | "rotate"; gameId: string }
-  | { kind: "fresh"; gameId: string; pin: string }
+  | { kind: "fresh" | "rotate-pin"; gameId: string; pin: string }
   | { kind: "remove" | "transfer"; gameId: string; player: PartyPlayer }
   | { kind: "skip"; gameId: string; roundNumber: number };
 
@@ -53,6 +59,12 @@ const phaseNames = {
   final: "Final standings",
 };
 
+function generateDifferentPin(current?: string) {
+  let pin = generatePin();
+  while (pin === current) pin = generatePin();
+  return pin;
+}
+
 function dialogTitle(dialog: PartyDialog) {
   switch (dialog.kind) {
     case "rules":
@@ -61,6 +73,14 @@ function dialogTitle(dialog: PartyDialog) {
       return "The standings";
     case "local":
       return "Switch to Pass & Play?";
+    case "home":
+      return "Choose another room?";
+    case "invite":
+      return "Invite players";
+    case "history":
+      return "This party’s history";
+    case "rotate-pin":
+      return "Replace the joining PIN?";
     case "manage":
       return "Manage party";
     case "new-game":
@@ -82,10 +102,22 @@ function dialogTitle(dialog: PartyDialog) {
   }
 }
 
-export default function PartyApp({ onLocal }: { onLocal: () => void }) {
-  const party = useParty();
+export default function PartyApp({ onLocal, roomCode, onRoomChange, initialPin }: {
+  onLocal: () => void;
+  roomCode: string | null;
+  onRoomChange: (roomCode: string | null) => void;
+  initialPin: string | null;
+}) {
+  const party = useParty({ roomCode, onRoomChange });
   const { snapshot, session, status, busy, error } = party;
-  const [dialog, setDialog] = useState<PartyDialog | null>(null);
+  const [pendingDialog, setDialog] = useState<PartyDialog | null>(null);
+  const dialog = pendingDialog &&
+    (!("gameId" in pendingDialog) || pendingDialog.gameId === snapshot?.gameId) &&
+    (!("roomCode" in pendingDialog) ||
+      (pendingDialog.roomCode === roomCode && pendingDialog.partyId === snapshot?.id))
+    ? pendingDialog : null;
+  const [consumedInvite, setConsumedInvite] = useState<string | null>(null);
+  const inviteKey = roomCode && initialPin ? `${roomCode}:${initialPin}` : null;
   const [revealKey, setRevealKey] = useState<string | null>(null);
   const [seenKey, setSeenKey] = useState<string | null>(null);
   const [dismissedNotice, setDismissedNotice] = useState<string | null>(null);
@@ -134,6 +166,17 @@ export default function PartyApp({ onLocal }: { onLocal: () => void }) {
     if (status !== "online") setRevealKey(null);
   }, [status]);
 
+  const historyOpen = dialog?.kind === "history";
+  useEffect(() => {
+    if (historyOpen) void party.loadHistory();
+  }, [historyOpen, snapshot?.completedGames, party.loadHistory]);
+
+  useEffect(() => {
+    setDialog(null);
+    setRevealKey(null);
+    setSeenKey(null);
+  }, [roomCode, snapshot?.id]);
+
   useEffect(() => {
     // A long join form or result must not leave the next phase below the fold.
     window.scrollTo({ top: 0, behavior: "instant" });
@@ -150,7 +193,9 @@ export default function PartyApp({ onLocal }: { onLocal: () => void }) {
     setDialog((current) => {
       if (!current || !("gameId" in current)) return current;
       if (!snapshot || current.gameId !== snapshot.gameId) return null;
-      if (current.kind !== "leave" && !host) return null;
+      if (current.kind !== "leave" && current.kind !== "history" && current.kind !== "invite" && !host) return null;
+      if ("roomCode" in current &&
+        (current.roomCode !== roomCode || current.partyId !== snapshot.id)) return null;
       if (
         (current.kind === "leave" || current.kind === "remove") &&
         snapshot.phase !== "lobby"
@@ -171,6 +216,8 @@ export default function PartyApp({ onLocal }: { onLocal: () => void }) {
     snapshot?.selfId,
     snapshot?.roundNumber,
     host,
+    roomCode,
+    snapshot?.id,
   ]);
 
   function openDialog(next: PartyDialog) {
@@ -181,6 +228,16 @@ export default function PartyApp({ onLocal }: { onLocal: () => void }) {
   function openManage() {
     if (snapshot && host)
       openDialog({ kind: "manage", gameId: snapshot.gameId });
+  }
+
+  function openPrivatePanel(kind: "history" | "invite") {
+    if (!snapshot) return;
+    openDialog({ kind, gameId: snapshot.gameId, partyId: snapshot.id, roomCode: snapshot.roomCode });
+  }
+
+  function goHome() {
+    if (session) openDialog({ kind: "home" });
+    else onRoomChange(null);
   }
 
   function send(command: PartyCommand) {
@@ -211,6 +268,10 @@ export default function PartyApp({ onLocal }: { onLocal: () => void }) {
         return { type: "end-party" };
       case "rotate":
         return { type: "rotate-recovery" };
+      case "rotate-pin":
+        return /^[0-9]{6}$/.test(dialog.pin) && dialog.pin !== snapshot.pin
+          ? { type: "rotate-pin", pin: dialog.pin }
+          : null;
       case "transfer":
         return snapshot.players.some(
           (player) =>
@@ -287,6 +348,16 @@ export default function PartyApp({ onLocal }: { onLocal: () => void }) {
           <ThemeToggle />
         </nav>
       </header>
+      <div className="party-room-navigation" aria-label="Current room">
+        <span>
+          {roomCode ? <>Room <strong>{roomCode}</strong></> : <strong>Own Phones home</strong>}
+        </span>
+        {roomCode && (
+          <button type="button" className="party-button" disabled={busy} onClick={goHome}>
+            <Home size={16} /> Home / choose room
+          </button>
+        )}
+      </div>
       <PlayModeSwitch
         mode="party"
         onChange={(next) => {
@@ -412,6 +483,15 @@ export default function PartyApp({ onLocal }: { onLocal: () => void }) {
                       : "Need to leave? Ask the host to reopen the lobby with New game, same players. That ends this game and clears scores; it does not end the party."}
                 </p>
               </div>
+              <div className="party-management-actions">
+                <button
+                  type="button"
+                  className="party-button party-invite-button"
+                  disabled={!safe}
+                  onClick={() => openPrivatePanel("invite")}
+                >
+                  <QrCode size={18} /> Invite players
+                </button>
               {host ? (
                 <button
                   type="button"
@@ -434,6 +514,15 @@ export default function PartyApp({ onLocal }: { onLocal: () => void }) {
                   Leave party
                 </button>
               ) : null}
+                <button
+                  type="button"
+                  className="party-button"
+                  disabled={!safe}
+                  onClick={() => openPrivatePanel("history")}
+                >
+                  <History size={17} /> History ({snapshot.completedGames})
+                </button>
+              </div>
             </div>
           </>
         )}
@@ -491,6 +580,14 @@ export default function PartyApp({ onLocal }: { onLocal: () => void }) {
           </section>
         ) : !snapshot ? (
           <PartyEntry
+            key={roomCode ?? "home"}
+            roomCode={roomCode}
+            initialPin={inviteKey !== consumedInvite ? initialPin : null}
+            onPinConsumed={() => setConsumedInvite(inviteKey)}
+            directory={party.directory}
+            recentRooms={party.recentRooms}
+            onRoomChange={onRoomChange}
+            onRemoveRecent={party.removeRecent}
             publicParty={party.publicParty}
             disabled={busy || status === "checking" || status === "connecting"}
             busy={busy}
@@ -553,7 +650,6 @@ export default function PartyApp({ onLocal }: { onLocal: () => void }) {
               <PartyLobby
                 key={`${snapshot.gameId}:${snapshot.hostId}`}
                 {...actionProps}
-                hideSecrets={!!dialog}
                 onRemove={(player) =>
                   openDialog({
                     kind: "remove",
@@ -679,6 +775,11 @@ export default function PartyApp({ onLocal }: { onLocal: () => void }) {
           A little Nepali. A little American. All <span lang="ne">रमाइलो</span>.
         </span>
         <span>Same room. Your own phone. No accounts.</span>
+        {party.configured && (
+          <a className="party-link" href={`${PARTY_API_URL}/admin`} target="_blank" rel="noopener noreferrer">
+            Admin · owner sign-in
+          </a>
+        )}
       </footer>
 
       {dialog && (
@@ -702,13 +803,44 @@ export default function PartyApp({ onLocal }: { onLocal: () => void }) {
                   Join a party to see the standings.
                 </p>
               )
-            ) : dialog.kind === "local" ? (
+            ) : dialog.kind === "history" && snapshot ? (
+              <HistoryPanel
+                history={party.history}
+                loading={party.historyLoading}
+                error={party.historyError}
+                onRetry={() => { void party.loadHistory(); }}
+              />
+            ) : dialog.kind === "invite" && snapshot ? (
               <>
                 <p className="modal-description">
-                  This does not leave or end your own-phone party. Your saved
-                  seat stays in this browser so you can switch back and
-                  reconnect while the party remains active. If everyone
-                  disconnects, the party expires after 15 minutes.
+                  Room <strong>{snapshot.roomCode}</strong> · {snapshot.players.length}/12 players
+                  {snapshot.phase === "lobby" ? " · Joining is open." : " · New players must wait for the lobby."}
+                </p>
+                {!safe ? (
+                  <p className="party-help">Reconnect before sharing the latest invitation.</p>
+                ) : (
+                  <>
+                    <InviteLink roomCode={snapshot.roomCode} pin={host ? snapshot.pin : undefined} />
+                    {host && snapshot.pin && (
+                      <PartySecret
+                        key={snapshot.pin}
+                        label="Joining PIN"
+                        value={snapshot.pin}
+                        help="Share only with your group. This PIN admits players; it does not grant hosting or owner administration."
+                        disabled={!safe}
+                      />
+                    )}
+                    {!host && <p className="party-help">Ask the host for the joining PIN; only the host receives it.</p>}
+                  </>
+                )}
+              </>
+            ) : dialog.kind === "local" || dialog.kind === "home" ? (
+              <>
+                <p className="modal-description">
+                  This does not leave or end your own-phone party. The room
+                  keeps running and your saved seat stays in this browser.
+                  Return through Recent rooms while it remains active. If
+                  everyone disconnects, the party expires after 15 minutes.
                 </p>
                 {host && (
                   <p className="party-form-error">
@@ -729,9 +861,13 @@ export default function PartyApp({ onLocal }: { onLocal: () => void }) {
                     className="party-button"
                     type="button"
                     disabled={busy}
-                    onClick={onLocal}
+                    onClick={() => {
+                      setDialog(null);
+                      if (dialog.kind === "home") onRoomChange(null);
+                      else onLocal();
+                    }}
                   >
-                    Switch to Pass &amp; Play
+                    {dialog.kind === "home" ? "Go to room home" : "Switch to Pass & Play"}
                   </button>
                 </div>
               </>
@@ -759,8 +895,8 @@ export default function PartyApp({ onLocal }: { onLocal: () => void }) {
                     <strong>New game, same players</strong>
                     <span>
                       End this scored game and reopen the lobby. Keep players,
-                      PIN, settings, and recent-word history; clear scores and
-                      rounds.
+                      PIN, settings, completed-game totals, and recent-word
+                      history; clear current-game scores and rounds.
                     </span>
                   </button>
                   <button
@@ -771,14 +907,15 @@ export default function PartyApp({ onLocal }: { onLocal: () => void }) {
                       openDialog({
                         kind: "fresh",
                         gameId: snapshot.gameId,
-                        pin: generatePin(),
+                        pin: generateDifferentPin(snapshot.pin),
                       })
                     }
                   >
                     <strong>Start a fresh party</strong>
                     <span>
-                      Close this party and all its seats. Keep only your host
-                      name and settings; everyone else rejoins with a new PIN.
+                      Replace this party in the same room and clear its history
+                      and seats. Keep your host name and settings; everyone else
+                      rejoins with a new PIN.
                     </span>
                   </button>
                   <button
@@ -796,6 +933,26 @@ export default function PartyApp({ onLocal }: { onLocal: () => void }) {
                     </span>
                   </button>
                 </div>
+                <section className="party-manage-section" aria-labelledby="party-joining-pin-title">
+                  <h3 id="party-joining-pin-title">Replace the joining PIN</h3>
+                  <p className="party-help">
+                    Stop old PIN-bearing invitations from admitting new players.
+                    Everyone already admitted keeps their seat, role, votes,
+                    scores, and history. Share the replacement through Invite players.
+                  </p>
+                  <button
+                    type="button"
+                    className="party-button"
+                    disabled={!safe}
+                    onClick={() => openDialog({
+                      kind: "rotate-pin",
+                      gameId: snapshot.gameId,
+                      pin: generateDifferentPin(snapshot.pin),
+                    })}
+                  >
+                    Replace joining PIN…
+                  </button>
+                </section>
                 <section
                   className="party-manage-section"
                   aria-labelledby="party-host-transfer-title"
@@ -885,12 +1042,14 @@ export default function PartyApp({ onLocal }: { onLocal: () => void }) {
             ) : (
               <>
                 <p className="modal-description">
-                  {dialog.kind === "new-game"
-                    ? "This ends the current game for everyone and clears scores, roles, ballots, and rounds. The same players return to the lobby with the same PIN and settings. Recent-word history stays to reduce repeats. No round starts until the host starts it from the lobby."
-                    : dialog.kind === "fresh"
-                      ? "This closes the old party and invalidates every old saved seat, including yours. Your host name and settings carry into a new lobby; only you enter it automatically. Everyone else sees an end notice and must join again with the new PIN. Scores, roles, and votes are cleared. Recent-word history is retained."
-                      : dialog.kind === "end"
-                        ? "Everyone will be disconnected. All roles, ballots, scores, names, and saved seats for this party will be cleared. Non-personal recent-word history remains to reduce repeats. No new party starts."
+                  {dialog.kind === "rotate-pin"
+                    ? "The old joining PIN and PIN-bearing invitations stop working immediately. Already admitted players stay connected with the same roles, votes, scores, and completed-game history. The room code and your private host recovery code do not change. Confirm the new PIN, then share a new invitation."
+                    : dialog.kind === "new-game"
+                      ? "This ends the current game for everyone and clears its scores, roles, ballots, and rounds. Completed-game history and totals are retained; an unfinished game is not recorded. The same players return to the lobby with the same PIN and settings. Recent-word history stays to reduce repeats. No round starts until the host starts it from the lobby."
+                      : dialog.kind === "fresh"
+                        ? "This replaces the party in the same room and invalidates every old saved seat, including yours. Your host name and settings carry into a new lobby; only you enter it automatically. Everyone else must join the same room again with the new PIN. Scores, roles, votes, completed-game history, and party totals are cleared. Recent-word history is retained."
+                        : dialog.kind === "end"
+                          ? "Everyone will be disconnected. This room closes and its roles, ballots, scores, names, saved seats, completed-game history, and recent-word storage are cleared. Old room links cannot reopen it. No new party starts."
                         : dialog.kind === "leave"
                           ? "Your seat will be removed from this lobby. You’ll need the PIN to join again before the next game starts."
                           : dialog.kind === "remove"
@@ -903,7 +1062,7 @@ export default function PartyApp({ onLocal }: { onLocal: () => void }) {
                                   ? "This immediately ends the imposter’s last chance without an answer. Everyone except the imposter receives 1 point and the secret word is revealed. An answer already accepted by the server takes precedence."
                                   : "The party has changed. Close this dialog to view the latest state."}
                 </p>
-                {dialog.kind === "fresh" && (
+                {(dialog.kind === "fresh" || dialog.kind === "rotate-pin") && (
                   <>
                     <PartyPinField
                       value={dialog.pin}
@@ -911,7 +1070,7 @@ export default function PartyApp({ onLocal }: { onLocal: () => void }) {
                       disabled={!safe}
                       onChange={(pin) =>
                         setDialog((current) =>
-                          current?.kind === "fresh"
+                          current?.kind === dialog.kind && "pin" in current
                             ? { ...current, pin }
                             : current,
                         )
@@ -919,7 +1078,7 @@ export default function PartyApp({ onLocal }: { onLocal: () => void }) {
                     />
                     {dialog.pin === snapshot?.pin && (
                       <p className="party-form-error" role="status">
-                        Choose a different PIN for the fresh party.
+                        Choose a different joining PIN.
                       </p>
                     )}
                   </>
@@ -957,6 +1116,8 @@ export default function PartyApp({ onLocal }: { onLocal: () => void }) {
                         ? "Confirm new game, same players"
                         : dialog.kind === "fresh"
                           ? "Confirm fresh party"
+                          : dialog.kind === "rotate-pin"
+                            ? "Replace joining PIN"
                           : dialog.kind === "end"
                             ? "End party for everyone"
                             : dialog.kind === "leave"

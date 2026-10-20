@@ -42,6 +42,27 @@
 .party-link:hover {
   color: var(--orange);
 }
+.party-room-navigation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  padding: 15px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.party-room-navigation > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.party-room-navigation strong {
+  color: var(--ink);
+  letter-spacing: 1px;
+}
+.party-room-navigation .party-button {
+  font-size: 11px;
+}
 .party-main {
   padding: 28px 0 48px;
   flex: 1;
@@ -329,6 +350,56 @@
   text-decoration: underline;
   text-underline-offset: 3px;
 }
+.party-recents {
+  margin-top: 28px;
+  padding-top: 22px;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+.party-recents h2 {
+  margin: 0 0 8px;
+  font-size: 21px;
+  overflow-wrap: anywhere;
+}
+.party-recents ul {
+  list-style: none;
+  padding: 0;
+  margin: 15px 0;
+}
+.party-recents li {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+}
+.party-recent-resume {
+  display: grid;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  padding: 13px 0;
+  background: transparent;
+  border: 0;
+  color: var(--ink);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.party-recent-resume strong {
+  letter-spacing: 1.5px;
+  font-size: 13px;
+}
+.party-recent-resume span,
+.party-recent-resume small {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.party-recent-resume:hover:not(:disabled) strong {
+  color: var(--orange);
+}
+.party-recents .party-link {
+  flex-shrink: 0;
+}
 .party-field {
   display: grid;
   gap: 8px;
@@ -347,6 +418,16 @@
 }
 .party-pin-input {
   letter-spacing: 9px;
+}
+.party-room-code-input {
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+.party-field small {
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.7;
+  color: var(--muted);
 }
 .party-field + .party-help {
   margin-top: 8px;
@@ -432,7 +513,7 @@
 }
 .party-setting-options {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   margin-top: 22px;
 }
@@ -462,23 +543,6 @@
   grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
   gap: 26px;
   align-items: start;
-}
-.party-invite {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 10px 16px;
-  padding: 20px;
-  border: 1px dashed var(--green-border);
-  background: var(--green-bg);
-  border-radius: 9px;
-  margin-bottom: 30px;
-}
-.party-invite p {
-  flex-basis: 100%;
-  font-size: 10px;
-  color: var(--muted);
 }
 .party-section-heading {
   display: flex;
@@ -998,6 +1062,31 @@
   color: var(--ink);
   background: var(--surface-active);
 }
+.party-management > .party-management-actions {
+  display: flex;
+  flex: 1 1 380px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.party-management-actions > .party-button {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.party-management .party-invite-button {
+  color: var(--on-accent);
+  background: var(--button-bg);
+  border-color: var(--button-border);
+}
+.party-management .party-invite-button:hover:not(:disabled) {
+  color: var(--on-accent);
+  background: var(--button-hover);
+  border-color: var(--button-border);
+}
+.party-management-actions svg {
+  flex-shrink: 0;
+}
 .party-notice {
   color: var(--green);
   border-color: var(--green-border);
@@ -1344,13 +1433,6 @@
   }
   .party-setting-options select {
     padding: 9px 5px;
-    font-size: 11px;
-  }
-  .party-invite {
-    padding: 15px;
-  }
-  .party-invite .party-button {
-    padding: 9px;
     font-size: 11px;
   }
   .party-roster li {

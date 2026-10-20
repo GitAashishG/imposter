@@ -20,15 +20,17 @@ import { PACKS } from "../data";
 import type { Settings } from "../game";
 import { DEFAULT_SETTINGS, rankPlayers } from "../game";
 import { GameOptions } from "../GameOptions";
-import { InviteLink } from "../InviteLink";
+import { DiscussionTimeControl } from "../DiscussionTime";
 import { copyText } from "../clipboard";
-import { generatePin, normalizeRecoveryCode } from "./joining";
+import { generatePin, normalizeRecoveryCode, normalizeRoomCode } from "./joining";
 import { SUGGESTED_PLAYER_NAMES } from "../playerNames";
 import type {
   PartyCommand,
   PartyPlayer,
   PartyPublicInfo,
   PartySnapshot,
+  RecentRoom,
+  RoomDirectoryInfo,
   PrivateRole,
 } from "./protocol";
 
@@ -100,24 +102,13 @@ export function PartySettings({
             ))}
           </select>
         </label>
-        <label>
-          Discussion time
-          <select
-            value={settings.discussionSeconds}
-            onChange={(event) =>
-              onChange({
-                ...settings,
-                discussionSeconds: Number(event.target.value),
-              })
-            }
-          >
-            {[30, 60, 90, 120].map((seconds) => (
-              <option key={seconds} value={seconds}>
-                {seconds} seconds
-              </option>
-            ))}
-          </select>
-        </label>
+        <DiscussionTimeControl
+          seconds={settings.discussionSeconds}
+          disabled={disabled}
+          onChange={(discussionSeconds) =>
+            onChange({ ...settings, discussionSeconds })
+          }
+        />
       </div>
       <GameOptions
         settings={settings}
@@ -327,7 +318,12 @@ export function PartyPinField({
 }
 
 export function PartyEntry({
+  roomCode,
+  initialPin,
+  onPinConsumed,
   publicParty,
+  directory,
+  recentRooms,
   disabled,
   busy,
   checking,
@@ -336,70 +332,86 @@ export function PartyEntry({
   onJoin,
   onRecover,
   onRefresh,
+  onRoomChange,
+  onRemoveRecent,
 }: {
+  roomCode: string | null;
+  initialPin: string | null;
+  onPinConsumed: () => void;
   publicParty: PartyPublicInfo | null;
+  directory: RoomDirectoryInfo | null;
+  recentRooms: RecentRoom[];
   disabled: boolean;
   busy: boolean;
   checking: boolean;
   hideSecrets: boolean;
   onCreate: (name: string, pin: string, settings: Settings) => Promise<boolean>;
-  onJoin: (name: string, pin: string) => Promise<boolean>;
-  onRecover: (code: string) => Promise<boolean>;
+  onJoin: (roomCode: string, name: string, pin: string) => Promise<boolean>;
+  onRecover: (roomCode: string, recoveryCode: string) => Promise<boolean>;
   onRefresh: () => void;
+  onRoomChange: (roomCode: string | null) => void;
+  onRemoveRecent: (roomCode: string) => void;
 }) {
-  const [choice, setChoice] = useState<"join" | "create" | "recover" | null>(
-    null,
+  const [mode, setMode] = useState<"join" | "create" | "recover">(
+    roomCode ? "join" : "create",
   );
+  const [targetCode, setTargetCode] = useState(roomCode ?? "");
   const [name, setName] = useState("");
-  const [joinPin, setJoinPin] = useState("");
+  const [joinPin, setJoinPin] = useState(initialPin ?? "");
   const [createPin, setCreatePin] = useState(generatePin);
   const [recoveryCode, setRecoveryCode] = useState("");
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [validation, setValidation] = useState<string | null>(null);
-  const mode = choice ?? (publicParty?.exists === false ? "create" : "join");
+  useEffect(() => {
+    if (!initialPin) return;
+    setJoinPin(initialPin);
+    setMode("join");
+    onPinConsumed();
+  }, [initialPin, onPinConsumed]);
   const creating = mode === "create";
   const recovering = mode === "recover";
   const pin = creating ? createPin : joinPin;
-  const activeMatch = !!publicParty?.exists && publicParty.phase !== "lobby";
-  const unavailable = recovering
-    ? publicParty?.exists === false
-    : creating
-      ? !!publicParty?.exists
-      : publicParty?.exists === false ||
-        activeMatch ||
-        (publicParty?.playerCount ?? 0) >= 12;
-  const invalid = recovering
+  const code = normalizeRoomCode(targetCode);
+  const validCode = !!code;
+  const selectedParty = publicParty?.roomCode === code ? publicParty : null;
+  const activeMatch = !!selectedParty?.exists && selectedParty.phase !== "lobby";
+  const atCapacity = !!directory && directory.availableSlots === 0;
+  const unavailable = creating
+    ? atCapacity
+    : selectedParty?.exists === false ||
+      (!recovering && (activeMatch || (selectedParty?.playerCount ?? 0) >= 12));
+  const invalid = (!creating && !validCode) || (recovering
     ? !normalizeRecoveryCode(recoveryCode)
-    : !name.trim() || name.trim().length > 24 || !/^[0-9]{6}$/.test(pin);
+    : !name.trim() || name.trim().length > 24 || !/^[0-9]{6}$/.test(pin));
   const disabledReason = unavailable
-    ? recovering
-      ? "There is no live party to recover."
-      : creating
-        ? "A party already exists. Join it, or ask its host to end it first."
+    ? creating
+      ? "All room slots are occupied. Existing rooms still work; join one with its code or try creating later."
+      : selectedParty?.exists === false
+        ? "This room has ended or could not be found. Return Home or check the code with your host. Old invitations cannot reopen an ended room."
         : activeMatch
           ? "A game is in progress. Ask the host for New game, same players to reopen the lobby."
-          : publicParty?.exists === false
-            ? "No party is live. Choose Be the host to create one."
-            : "The circle is full. Ask the host to make room."
-    : recovering
-      ? invalid
-        ? "Enter your full private recovery code: 8 groups of 4 characters (0–9 and A–F). Spaces and dashes are accepted. The joining PIN does not work here."
-        : "Ready to restore the original host’s seat."
-      : !name.trim()
-        ? "Enter your name and all 6 PIN digits to continue."
-        : pin.length !== 6
-          ? "Enter all 6 PIN digits to continue."
-          : "Ready when you are. Your name becomes a player only after you submit successfully.";
+          : "This circle has 12 players. Ask the host to make room in the lobby."
+    : !creating && !validCode
+      ? "Enter the 8-character room code from your host or invitation."
+      : recovering
+        ? invalid
+          ? "Enter your full private recovery code: 8 groups of 4 characters (0–9 and A–F). Spaces and dashes are accepted. The joining PIN does not work here."
+          : "Ready to restore the original host’s seat."
+        : !name.trim()
+          ? "Enter your name and all 6 PIN digits to continue."
+          : pin.length !== 6
+            ? "Enter all 6 PIN digits to continue."
+            : "Ready when you are. Your name becomes a player only after you submit successfully.";
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (disabled || unavailable || invalid) return;
     setValidation(null);
     const success = recovering
-      ? await onRecover(normalizeRecoveryCode(recoveryCode))
+      ? await onRecover(code, normalizeRecoveryCode(recoveryCode))
       : creating
         ? await onCreate(name.trim(), pin, settings)
-        : await onJoin(name.trim(), pin);
+        : await onJoin(code, name.trim(), pin);
     if (success) {
       setJoinPin("");
       setRecoveryCode("");
@@ -446,6 +458,40 @@ export function PartyEntry({
           Gather in person. The host plays too. Clues and discussion happen out
           loud, not in a chat.
         </p>
+        {!roomCode && recentRooms.length > 0 && (
+          <section className="party-recents" aria-labelledby="party-recents-title">
+            <h2 id="party-recents-title">Recent rooms on this device</h2>
+            <p className="party-help">
+              Resume your saved seat if the room is still active. This is not a public room list.
+            </p>
+            <ul>
+              {recentRooms.map((room) => (
+                <li key={room.roomCode}>
+                  <button
+                    type="button"
+                    className="party-recent-resume"
+                    disabled={disabled}
+                    onClick={() => onRoomChange(room.roomCode)}
+                  >
+                    <strong>{room.roomCode}</strong>
+                    <span>{room.playerName ? `Resume as ${room.playerName}` : "Open room"}</span>
+                    <small>Visited {new Date(room.lastVisited).toLocaleDateString()}</small>
+                  </button>
+                  <button
+                    type="button"
+                    className="party-link"
+                    aria-label={`Remove ${room.roomCode} from recent rooms only`}
+                    disabled={busy}
+                    onClick={() => onRemoveRecent(room.roomCode)}
+                  >
+                    Remove
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <p className="party-help">Removing a recent entry does not leave the party or erase its saved seat.</p>
+          </section>
+        )}
       </section>
       <section
         className="party-card party-entry-card"
@@ -459,8 +505,8 @@ export function PartyEntry({
         >
           {(
             [
-              ["join", "Join the party"],
-              ["create", "Be the host"],
+              ["create", "Create a room"],
+              ["join", "Join a room"],
               ["recover", "Recover hosting"],
             ] as const
           ).map(([next, label]) => (
@@ -470,7 +516,7 @@ export function PartyEntry({
               aria-pressed={mode === next}
               disabled={busy}
               onClick={() => {
-                setChoice(next);
+                setMode(next);
                 setValidation(null);
               }}
             >
@@ -489,19 +535,25 @@ export function PartyEntry({
           {recovering
             ? "Use the private recovery code you saved as host. This restores your original name, role, votes, and scores — no new player is added."
             : creating
-              ? "Choose your name. We’ve generated a private 6-digit PIN for your group."
-              : "Ask your host for the PIN. Pick a name the room will recognize."}
+              ? "Choose your name and a private 6-digit joining PIN. Your new room gets its own code and invitation."
+              : "Use your host’s room code and PIN. An invitation fills these in; you still choose your name and press Join."}
         </p>
         <div className="party-availability" role="status">
           {checking
-            ? "Checking the party…"
-            : !publicParty
-              ? "Party availability could not be checked. Refresh to try again."
-              : publicParty.exists
-                ? activeMatch
-                  ? "A game is in progress. New players must wait for the lobby; the original host can still recover hosting."
-                  : `${publicParty.playerCount ?? 0}/12 people in the lobby.`
-                : "No party is live. Be the host and start one."}
+            ? "Checking room availability…"
+            : creating
+              ? directory
+                ? `${directory.activeRooms} of ${directory.roomCap} room slots occupied. ${directory.availableSlots > 0 ? `${directory.availableSlots} available for a new room.` : "All slots are occupied. Joining an existing room is still available."}`
+                : "Room capacity could not be checked. You can try creating; the server checks availability."
+              : selectedParty
+                ? selectedParty.exists
+                  ? activeMatch
+                    ? "A game is in progress. New players must wait for the lobby; the original host can still recover hosting."
+                    : `${selectedParty.playerCount ?? 0}/12 people in this room’s lobby.`
+                  : "Room not found or closed. Return Home to choose another room or create a new one."
+                : roomCode === code
+                  ? "Room availability could not be checked. Refresh to try again."
+                  : "Enter a room code to join or recover that specific room. Room codes are not a public directory."}
           <button
             className="party-link"
             type="button"
@@ -510,12 +562,40 @@ export function PartyEntry({
           >
             Refresh availability
           </button>
+          {!creating && selectedParty?.exists === false && (
+            <button className="party-link" type="button" onClick={() => onRoomChange(null)}>
+              Return Home
+            </button>
+          )}
         </div>
         <form
           onSubmit={(event) => {
             void submit(event);
           }}
         >
+          {!creating && (
+            <label className="party-field" htmlFor="party-room-code">
+              Room code
+              <input
+                id="party-room-code"
+                className="party-room-code-input"
+                value={targetCode}
+                placeholder="e.g. ABCD2345"
+                autoComplete="off"
+                autoCapitalize="characters"
+                spellCheck={false}
+                maxLength={8}
+                required
+                disabled={disabled}
+                aria-describedby="party-room-code-help"
+                onChange={(event) => {
+                  setTargetCode(event.target.value.toUpperCase());
+                  setValidation(null);
+                }}
+              />
+              <small id="party-room-code-help">8 letters and numbers. Ask your host; no rooms are publicly listed.</small>
+            </label>
+          )}
           {recovering ? (
             <>
               <label className="party-field" htmlFor="party-recovery">
@@ -601,9 +681,9 @@ export function PartyEntry({
           </PrimaryButton>
         </form>
         <p className="party-footnote">
-          This browser saves a device token to restore your seat on refresh.
-          Don’t clear site storage. PINs, recovery codes, and tokens never go in
-          the URL.
+          This browser saves a separate seat for each room. Don’t clear site
+          storage. Invitations may include the joining PIN in a removable URL
+          fragment; recovery codes and seat tokens never go in links.
         </p>
       </section>
     </div>
@@ -661,10 +741,8 @@ export function PartyLobby({
   safe,
   onAction,
   onRemove,
-  hideSecrets,
 }: RoundProps & {
   onRemove: (player: PartyPlayer) => void;
-  hideSecrets: boolean;
 }) {
   const host = snapshot.selfId === snapshot.hostId;
   const everyoneConnected = snapshot.players.every(
@@ -681,26 +759,9 @@ export function PartyLobby({
         </h1>
         <p className="party-copy">
           {host
-            ? "You’re hosting — and you’re playing. Ask everyone to open Ko Ho?, choose Own phones, and join with their name and your PIN."
+            ? "You’re hosting — and you’re playing. Use Invite players above to share this room’s QR code or private joining link. Save your host recovery code from Manage party too."
             : "You’re in. Keep your own phone nearby while the host gathers the circle and picks the settings."}
         </p>
-        {host && (
-          <>
-            {snapshot.pin && (
-              <div className="party-invite">
-                <PartySecret
-                  key={`${snapshot.gameId}:${snapshot.selfId}`}
-                  label="Party PIN"
-                  value={snapshot.pin}
-                  help="Share in person, not in a public link. Save your private recovery code from Manage party too."
-                  disabled={!safe}
-                  hidden={hideSecrets}
-                />
-              </div>
-            )}
-            <InviteLink />
-          </>
-        )}
         <div className="party-section-heading">
           <h2>The guest list</h2>
           <span>{snapshot.players.length}/12 players</span>
@@ -1455,10 +1516,13 @@ export function PartyRules() {
           <div>
             <strong>Join the circle</strong>
             <p>
-              One person hosts and plays too. Everyone joins with a name and the
-              host’s 6-digit PIN. No accounts needed. This browser saves a
-              device token to restore your seat on refresh. Don’t clear site
-              storage or switch browsers if you want to reconnect as yourself.
+              One person hosts and plays too. Everyone opens that room’s invite
+              or enters its 8-character room code, then joins with their own
+              name and the host’s 6-digit PIN. Scanning an invitation does not
+              add a player automatically. No player accounts are needed. This
+              browser saves a separate device token for each room to restore
+              your seat on refresh. Don’t clear site storage or switch browsers
+              if you want to reconnect as yourself.
             </p>
           </div>
         </li>
@@ -1524,10 +1588,13 @@ export function PartyRules() {
           to a connected player, or start a confirmed New game, same players to
           reopen the lobby and remove missing players. Starting a fresh party
           invalidates all old seats; everyone else must rejoin with the new PIN.
-          Ending or expiring the party clears personal state. A party expires
-          after 12 hours without a game action, or after 15 continuous minutes
-          with everyone disconnected. Non-personal recent-word history is
-          retained to reduce repeats.
+          This party retains only the last 20 completed games and their totals,
+          visible to admitted players through History. New game keeps that
+          history; a fresh party clears it. Ending or expiring a room clears all
+          personal state, completed-game history, and its recent-word storage.
+          A party expires after 12 hours without a game action, or after 15
+          continuous minutes with everyone disconnected. Owner administration
+          is separate from hosting and requires the owner’s GitHub sign-in.
         </p>
       </div>
     </div>

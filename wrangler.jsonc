@@ -7,9 +7,18 @@
   "observability": { "enabled": false },
   "vars": {
     "ALLOWED_ORIGINS": "https://gitaashishg.github.io,http://localhost:5173,http://localhost:5174,http://localhost:4174",
+    "ADMIN_GITHUB_USER_ID": "9066299",
+    "PUBLIC_SITE_URL": "https://gitaashishg.github.io/imposter/",
   },
   "durable_objects": {
-    "bindings": [{ "name": "PARTY", "class_name": "PartyRoom" }],
+    "bindings": [
+      { "name": "PARTY", "class_name": "PartyRoom" },
+      { "name": "DIRECTORY", "class_name": "RoomDirectory" },
+      { "name": "ADMIN_AUTH", "class_name": "AdminAuth" }
+    ],
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PartyRoom"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["PartyRoom"] },
+    { "tag": "v2", "new_sqlite_classes": ["RoomDirectory", "AdminAuth"] }
+  ],
 }

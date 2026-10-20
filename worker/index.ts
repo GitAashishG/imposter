@@ -1,5 +1,13 @@
 import { DurableObject } from "cloudflare:workers";
+import type { Env } from "./env";
+import { handleAdminRequest } from "./admin";
+import { historyView } from "../src/history";
+import { PARTY_TTL_MS } from "./model";
+import { REGISTRY_ERROR_STATUS, RegistryError, normalizeRoomCode, roomRoute, safeMetadata } from "./registry-domain";
+export { AdminAuth } from "./admin";
+export { RoomDirectory } from "./registry";
 import type {
+  AdminRoom,
   PartyActionResponse,
   PartyEntry,
   PartyEvent,
@@ -42,23 +50,10 @@ import {
   type FailureAttempt,
 } from "./security";
 
-export interface Env {
-  PARTY: DurableObjectNamespace<PartyRoom>;
-  ALLOWED_ORIGINS: string;
-}
 
 const BODY_LIMIT = 16 * 1024;
 const AUTH_TIMEOUT_MS = 15_000;
 const MAX_SOCKETS = 96;
-const paths = new Map([
-  ["/api/party", "GET"],
-  ["/api/party/create", "POST"],
-  ["/api/party/join", "POST"],
-  ["/api/party/recover", "POST"],
-  ["/api/party/state", "GET"],
-  ["/api/party/action", "POST"],
-  ["/api/party/socket", "GET"],
-]);
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
@@ -74,6 +69,11 @@ function json(value: unknown, status = 200): Response {
 function errorResponse(error: unknown): Response {
   if (error instanceof PartyError)
     return json({ error: error.message, code: error.code }, error.status);
+  if (error instanceof Error) {
+    const match = /^(?:remote: )?([A-Z_]+): (.+)$/.exec(error.message);
+    if (match && Object.hasOwn(REGISTRY_ERROR_STATUS, match[1]!))
+      return json({ error: match[2], code: match[1] }, REGISTRY_ERROR_STATUS[match[1]!]!);
+  }
   // Never return exception text: it could contain persisted private state.
   return json(
     {
@@ -150,44 +150,55 @@ function cors(response: Response, origin: string | null): Response {
 
 export default {
   async fetch(request, env): Promise<Response> {
+    // Owner authentication/cookies stay same-origin and never enter player CORS.
+    const admin = await handleAdminRequest(request, env);
+    if (admin) return admin;
     const origin = request.headers.get("Origin");
-    const allowed = (env.ALLOWED_ORIGINS || "")
-      .split(",")
-      .map((value) => value.trim())
-      .filter(Boolean);
-    if (origin && !allowed.includes(origin)) {
-      return errorResponse(
-        new PartyError(
-          "ORIGIN_FORBIDDEN",
-          "This website is not allowed to access the party server.",
-          403,
-        ),
-      );
-    }
+    const allowed = (env.ALLOWED_ORIGINS || "").split(",").map((value) => value.trim()).filter(Boolean);
+    if (origin && !allowed.includes(origin))
+      return errorResponse(new PartyError("ORIGIN_FORBIDDEN", "This website is not allowed to access the party server.", 403));
     try {
       const url = new URL(request.url);
-      const method = paths.get(url.pathname);
-      if (!method)
-        throw new PartyError(
-          "NOT_FOUND",
-          "No party endpoint exists at this address.",
-          404,
-        );
-      if (url.search)
-        throw new PartyError(
-          "INVALID_URL",
-          "Party requests cannot contain URL parameters.",
-        );
-      if (request.method === "OPTIONS")
-        return cors(new Response(null, { status: 204 }), origin);
-      if (request.method !== method)
-        throw new PartyError(
-          "METHOD_NOT_ALLOWED",
-          "That HTTP method is not supported.",
-          405,
-        );
-      const room = env.PARTY.get(env.PARTY.idFromName("single-party"));
-      return cors(await room.fetch(request), origin);
+      if (url.pathname === "/api/party" || url.pathname.startsWith("/api/party/"))
+        return cors(json({ code: "UPDATE_REQUIRED", error: "Ko Ho? now uses room codes. Refresh the game to update; your saved seat will be restored." }, 426), origin);
+      const route = roomRoute(url.pathname);
+      if (!route) throw new PartyError("ROOM_NOT_FOUND", "This room has ended or does not exist. Return home to join or create a room.", 404);
+      if (url.search) throw new PartyError("INVALID_URL", "Room requests cannot contain URL parameters.");
+      if (request.method === "OPTIONS") return cors(new Response(null, { status: 204 }), origin);
+      if (!route.methods.includes(request.method)) throw new PartyError("METHOD_NOT_ALLOWED", "That HTTP method is not supported.", 405);
+      const directory = env.DIRECTORY.getByName("rooms");
+      const ipHash = await hashSecret(request.headers.get("CF-Connecting-IP") || "local");
+      await directory.checkRequest(ipHash);
+      if (route.kind === "directory") {
+        if (request.method === "GET") return cors(json(await directory.publicInfo()), origin);
+        const body = await readJson(request);
+        exactKeys(body, ["name", "pin", "settings"]);
+        validateName(body.name);
+        validatePin(body.pin);
+        validateSettings(body.settings);
+        const reservation = await directory.reserve(ipHash);
+        try {
+          const room = env.PARTY.getByName(reservation.objectKey);
+          await room.bindRoomCode(reservation.roomCode);
+          const entry = await room.createReserved(body, reservation.reservationId);
+          return cors(json(entry, 201), origin);
+        } catch (error) {
+          await directory.releaseReservation(reservation.roomCode, reservation.reservationId);
+          throw error;
+        }
+      }
+      if (route.kind === "restore") {
+        exactKeys(await readJson(request), []);
+        const migrated = await directory.migratedRoom();
+        if (!migrated) throw new PartyError("SESSION_ENDED", "The saved party has ended. Join or create a room.", 401);
+        const entry = await env.PARTY.getByName(migrated.objectKey).restoreSession(request.headers.get("Authorization") || "");
+        return cors(json(entry), origin);
+      }
+      const address = await directory.lookup(route.roomCode!);
+      if (!address) throw new PartyError("ROOM_NOT_FOUND", "This room has ended or does not exist. Return home to join or create a room.", 404);
+      const routed = new URL(request.url);
+      routed.pathname = `/api/rooms/${address.roomCode}${route.operation === "public" ? "" : `/${route.operation}`}`;
+      return cors(await env.PARTY.getByName(address.objectKey).fetch(new Request(routed, request)), origin);
     } catch (error) {
       return cors(errorResponse(error), origin);
     }
@@ -207,6 +218,10 @@ export class PartyRoom extends DurableObject<Env> {
   private history: string[] = [];
   private attempts: FailureAttempt[] = [];
   private recoveryAttempts: FailureAttempt[] = [];
+  private roomCode: string | null = null;
+  private createdAt = 0;
+  private publishedPartyId: string | null = null;
+  private publishedMetadata = "";
   private readonly serial = new SerialQueue();
   private readonly randomBuffer = new Uint32Array(1);
 
@@ -222,6 +237,8 @@ export class PartyRoom extends DurableObject<Env> {
         "SELECT key, value FROM party_store",
       )) {
         if (row.key === "party") saved = JSON.parse(row.value);
+        if (row.key === "room_code") this.roomCode = JSON.parse(row.value) as string;
+        if (row.key === "created_at") this.createdAt = JSON.parse(row.value) as number;
         if (row.key === "word_history") history = JSON.parse(row.value);
         if (row.key === "pin_attempts")
           this.attempts = JSON.parse(row.value) as FailureAttempt[];
@@ -230,7 +247,18 @@ export class PartyRoom extends DurableObject<Env> {
       }
       const migrated = migrateStoredParty(saved, history, Date.now());
       this.saveParty(migrated.party, migrated.history);
-      // Only v1 migration may bind legacy authenticated sockets to the current credential.
+      this.publishedPartyId = this.party?.id ?? null;
+      if (saved && !this.party) {
+        // Migration may discover an already-expired saved party before settle sees it.
+        // Do not leave its anonymous word history behind until a directory probe.
+        this.ctx.storage.sql.exec("DELETE FROM party_store");
+        this.history = [];
+        this.attempts = [];
+        this.recoveryAttempts = [];
+        this.endAll("This party expired. Join or create a new room when you are ready.");
+        await this.ctx.storage.deleteAlarm();
+      }
+      // A v1/v2 schema upgrade may attach the original credential to old live sockets.
       // Later wakes must never re-authorize a revoked host by their seat ID alone.
       if (migrated.legacy && this.party) {
         for (const socket of ctx.getWebSockets()) {
@@ -252,6 +280,137 @@ export class PartyRoom extends DurableObject<Env> {
       await this.settle(Date.now());
       this.broadcast(Date.now());
     });
+  }
+
+  private boundCode(): string {
+    if (!this.roomCode || !normalizeRoomCode(this.roomCode))
+      throw new PartyError("ROOM_NOT_FOUND", "This room has not been registered.", 404);
+    return this.roomCode;
+  }
+
+  private metadata(exclude?: WebSocket): AdminRoom | null {
+    if (!this.party || !this.roomCode) return null;
+    return safeMetadata({
+      roomCode: this.roomCode, partyId: this.party.id, status: "active",
+      phase: this.party.phase, playerCount: this.party.players.length,
+      connectedCount: this.connected(this.party, exclude).size,
+      createdAt: this.createdAt, lastActivityAt: this.party.expiresAt - PARTY_TTL_MS,
+      expiresAt: this.party.expiresAt, abandonedExpiresAt: this.party.abandonedExpiresAt,
+      completedGames: this.party.gameHistory.completedGames,
+      closedAt: null, closeReason: null, storagePurged: false,
+    });
+  }
+
+  private async publishMetadata(exclude?: WebSocket): Promise<void> {
+    const metadata = this.metadata(exclude);
+    if (!metadata) return;
+    const encoded = JSON.stringify(metadata);
+    if (encoded === this.publishedMetadata) return;
+    await this.env.DIRECTORY.getByName("rooms").updateRoom(metadata, this.publishedPartyId ?? metadata.partyId!);
+    this.publishedMetadata = encoded;
+    this.publishedPartyId = metadata.partyId;
+  }
+
+  /** Transport binding is independent of saved game schema and never rotates a seat. */
+  async bindRoomCode(code: string): Promise<AdminRoom | null> {
+    return this.serial.run(async () => {
+      if (normalizeRoomCode(code) !== code || (this.roomCode && this.roomCode !== code))
+        throw new RegistryError("INVALID_ROOM_CODE", "This room address cannot be rebound.");
+      this.roomCode = code;
+      this.store("room_code", code);
+      await this.settle(Date.now());
+      if (this.party) this.broadcast(Date.now());
+      return this.metadata();
+    });
+  }
+
+  async createReserved(body: Record<string, unknown>, reservationId: string): Promise<PartyEntry> {
+    return this.serial.run(async () => {
+      const code = this.boundCode();
+      const directory = this.env.DIRECTORY.getByName("rooms");
+      await directory.claimReservation(code, reservationId);
+      try {
+        const response = await this.enter(body, true, new Request("https://room.invalid"));
+        await directory.activateReservation(code, reservationId, this.metadata()!);
+        return await response.json() as PartyEntry;
+      } catch (error) {
+        await this.terminate("This room could not be created. Please try again.", "reservation-expired");
+        throw error;
+      }
+    });
+  }
+
+  async restoreSession(authorization: string): Promise<PartyEntry> {
+    return this.serial.run(async () => {
+      try {
+        const playerId = await this.actor(new Request("https://room.invalid", { headers: { Authorization: authorization } }));
+        const token = authorization.slice(7);
+        return {
+          session: { roomCode: this.boundCode(), partyId: this.party!.id, playerId, token },
+          snapshot: project(this.party!, playerId, Date.now(), this.connected(), this.boundCode()),
+        };
+      } catch (error) {
+        if (error instanceof PartyError) throw new RegistryError(error.code, error.message, error.status);
+        throw error;
+      }
+    });
+  }
+
+  async inspectRoom(): Promise<AdminRoom | null> {
+    return this.serial.run(async () => {
+      await this.settle(Date.now());
+      if (!this.party) {
+        this.ctx.storage.sql.exec("DELETE FROM party_store");
+        await this.ctx.storage.deleteAlarm();
+      }
+      return this.metadata();
+    });
+  }
+
+  async closeRoom(code: string, expectedPartyId: string): Promise<void> {
+    await this.serial.run(async () => {
+      if (this.roomCode !== code || this.party?.id !== expectedPartyId)
+        throw new RegistryError("STALE_PARTY", "This room changed. Refresh before trying again.", 409);
+      await this.terminate("The owner closed this room. Join or create a new room when you are ready.", "owner-closed");
+    });
+  }
+
+  /** Purge never deletes a non-expired replacement generation. */
+  async purgeRoom(code: string, expectedPartyId: string | null): Promise<void> {
+    await this.serial.run(async () => {
+      if (this.roomCode && this.roomCode !== code)
+        throw new RegistryError("STALE_PARTY", "This room changed. Refresh before trying again.", 409);
+      if (this.party) {
+        if (this.party.id !== expectedPartyId)
+          throw new RegistryError("STALE_PARTY", "This room changed. Refresh before trying again.", 409);
+        if (advanceTime(this.party, Date.now()))
+          throw new RegistryError("ROOM_ACTIVE", "Close this active room before purging it.", 409);
+        await this.terminate(expirationMessage(this.party), "expired");
+      } else {
+        this.ctx.storage.sql.exec("DELETE FROM party_store");
+        this.history = [];
+        this.attempts = [];
+        this.recoveryAttempts = [];
+        await this.ctx.storage.deleteAlarm();
+      }
+    });
+  }
+
+  private async terminate(message: string, reason: string): Promise<void> {
+    const previous = this.metadata();
+    this.endAll(message);
+    this.ctx.storage.sql.exec("DELETE FROM party_store");
+    this.party = null;
+    this.history = [];
+    this.attempts = [];
+    this.recoveryAttempts = [];
+    await this.ctx.storage.deleteAlarm();
+    if (previous) {
+      const closed: AdminRoom = { ...previous, status: "closed", phase: null,
+        connectedCount: 0, playerCount: 0, closedAt: Date.now(), closeReason: reason, storagePurged: true };
+      await this.env.DIRECTORY.getByName("rooms").updateRoom(closed, previous.partyId!);
+      this.publishedMetadata = JSON.stringify(closed);
+    }
   }
 
   private attachment(socket: WebSocket): SocketAttachment | null {
@@ -294,6 +453,7 @@ export class PartyRoom extends DurableObject<Env> {
   private endSocket(socket: WebSocket, message: string): void {
     this.send(socket, {
       type: "ended",
+      roomCode: this.roomCode,
       partyId: this.attachment(socket)?.partyId ?? null,
       message,
     });
@@ -310,6 +470,7 @@ export class PartyRoom extends DurableObject<Env> {
   }
 
   private broadcast(now: number, exclude?: WebSocket): void {
+    if (!this.roomCode) return; // Registry binds the legacy address before any projection.
     const connected = this.connected(this.party, exclude);
     for (const socket of this.ctx.getWebSockets()) {
       if (socket === exclude || socket.readyState !== WebSocket.OPEN) continue;
@@ -323,7 +484,7 @@ export class PartyRoom extends DurableObject<Env> {
       } else {
         this.send(socket, {
           type: "snapshot",
-          snapshot: project(this.party!, auth.playerId, now, connected),
+          snapshot: project(this.party!, auth.playerId, now, connected, this.roomCode),
         });
       }
     }
@@ -331,6 +492,10 @@ export class PartyRoom extends DurableObject<Env> {
 
   /** Personal state and separate non-personal history commit atomically before memory changes. */
   private saveParty(next: PartyState | null, history = this.history): void {
+    if (next && !this.createdAt) {
+      this.createdAt = next.expiresAt - PARTY_TTL_MS;
+      this.store("created_at", this.createdAt);
+    }
     const clearAttempts =
       !next || (this.party !== null && this.party.id !== next.id);
     this.ctx.storage.transactionSync(() => {
@@ -380,19 +545,22 @@ export class PartyRoom extends DurableObject<Env> {
     const deadline = nextAlarmDeadline(this.party, unauthenticated);
     if (deadline === null) await this.ctx.storage.deleteAlarm();
     else await this.ctx.storage.setAlarm(deadline);
+    await this.publishMetadata(exclude);
   }
 
   /** Alarms and requests share deadline resolution, preventing late guesses after delayed alarms. */
   private async settle(now: number, exclude?: WebSocket): Promise<void> {
     const previous = this.party;
-    const presence = previous
-      ? updatePresence(previous, this.connected(previous, exclude), now)
-      : null;
-    const next = advanceTime(presence, now);
+    // Expiry is checked before presence: a late reconnect must not revive an expired room.
+    const advanced = advanceTime(previous, now);
+    if (previous && !advanced) {
+      await this.terminate(expirationMessage(previous), "expired");
+      return;
+    }
+    const next = advanced ? updatePresence(advanced, this.connected(advanced, exclude), now) : null;
     if (next !== previous) {
       this.saveParty(next);
-      if (previous && !next) this.endAll(expirationMessage(presence!));
-      else this.broadcast(now, exclude);
+      this.broadcast(now, exclude);
     }
     await this.scheduleAlarm(exclude);
   }
@@ -408,6 +576,7 @@ export class PartyRoom extends DurableObject<Env> {
         401,
       );
     const hash = await hashToken(match[1]);
+    authenticate(this.party, hash, Date.now()); // Reject foreign tokens before any presence/state mutation.
     await this.settle(Date.now());
     return authenticate(this.party, hash, Date.now());
   }
@@ -469,8 +638,8 @@ export class PartyRoom extends DurableObject<Env> {
     this.broadcast(now);
     await this.scheduleAlarm();
     const entry: PartyEntry = {
-      session: { partyId: next.id, playerId: member.id, token },
-      snapshot: project(next, member.id, now, this.connected()),
+      session: { roomCode: this.boundCode(), partyId: next.id, playerId: member.id, token },
+      snapshot: project(next, member.id, now, this.connected(), this.boundCode()),
     };
     return json(entry, creating ? 201 : 200);
   }
@@ -516,8 +685,8 @@ export class PartyRoom extends DurableObject<Env> {
     this.broadcast(now);
     await this.scheduleAlarm();
     const entry: PartyEntry = {
-      session: { partyId: next.id, playerId: next.hostId, token },
-      snapshot: project(next, next.hostId, now, this.connected()),
+      session: { roomCode: this.boundCode(), partyId: next.id, playerId: next.hostId, token },
+      snapshot: project(next, next.hostId, now, this.connected(), this.boundCode()),
     };
     return json(entry);
   }
@@ -550,27 +719,25 @@ export class PartyRoom extends DurableObject<Env> {
     );
     if (next !== previous) {
       if (next) next = updatePresence(next, this.connected(next), now);
-      this.saveParty(next, updateWordHistory(previous, next, this.history));
-      if (!next)
-        this.endAll(
-          "The host ended this party. Join or create a new party when you are ready.",
-        );
-      else if (next.id !== previous.id)
-        this.endAll(
-          "The host started a fresh party. Ask for the new PIN and join again.",
-        );
-      else this.broadcast(now);
+      if (!next) {
+        await this.terminate("The host ended this party. Join or create a new party when you are ready.", "host-ended");
+      } else {
+        this.saveParty(next, updateWordHistory(previous, next, this.history));
+        if (next.id !== previous.id)
+          this.endAll("The host started a fresh party. Ask for the new PIN and join again.");
+        else this.broadcast(now);
+      }
       await this.scheduleAlarm();
     }
     const session =
       next && token && freshHost
-        ? { partyId: next.id, playerId: freshHost.id, token }
+        ? { roomCode: this.boundCode(), partyId: next.id, playerId: freshHost.id, token }
         : undefined;
     const selfId = session?.playerId ?? actorId;
     const response: PartyActionResponse = {
       snapshot:
         next && next.players.some((player) => player.id === selfId)
-          ? project(next, selfId, now, this.connected())
+          ? project(next, selfId, now, this.connected(), this.boundCode())
           : null,
       ...(session ? { session } : {}),
     };
@@ -607,36 +774,36 @@ export class PartyRoom extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     try {
       const url = new URL(request.url);
+      const route = roomRoute(url.pathname);
+      if (!route || route.kind !== "room" || route.roomCode !== this.roomCode || url.search)
+        throw new PartyError("ROOM_NOT_FOUND", "This room has ended or does not exist.", 404);
+      if (!route.methods.includes(request.method)) throw new PartyError("METHOD_NOT_ALLOWED", "That HTTP method is not supported.", 405);
       // Slow bounded uploads cannot hold the mutation lock.
       const body = request.method === "POST" ? await readJson(request) : null;
       return await this.serial.run(async () => {
         const now = Date.now();
-        await this.settle(now);
-        switch (url.pathname) {
-          case "/api/party":
-            return json(publicInfo(this.party, now));
-          case "/api/party/create":
-            return this.enter(body!, true, request);
-          case "/api/party/join":
-            return this.enter(body!, false, request);
-          case "/api/party/recover":
-            return this.recover(body!, request);
-          case "/api/party/socket":
-            return this.upgrade(request, now);
-          case "/api/party/state": {
-            const actorId = await this.actor(request);
-            return json(
-              project(this.party!, actorId, Date.now(), this.connected()),
-            );
+        switch (route.operation) {
+          case "public": {
+            await this.settle(now);
+            if (!this.party) throw new PartyError("ROOM_NOT_FOUND", "This room has ended or does not exist.", 404);
+            return json(publicInfo(this.party, now, this.boundCode()));
           }
-          case "/api/party/action":
-            return this.act(body!, request);
-          default:
-            throw new PartyError(
-              "NOT_FOUND",
-              "This party endpoint does not exist.",
-              404,
-            );
+          case "join": return this.enter(body!, false, request);
+          case "recover": return this.recover(body!, request);
+          case "socket": {
+            await this.settle(now);
+            requireParty(this.party, now);
+            return this.upgrade(request, now);
+          }
+          case "state": {
+            const actorId = await this.actor(request);
+            return json(project(this.party!, actorId, Date.now(), this.connected(), this.boundCode()));
+          }
+          case "history": {
+            await this.actor(request);
+            return json({ partyId: this.party!.id, roomCode: this.boundCode(), history: historyView(this.party!.gameHistory) });
+          }
+          case "action": return this.act(body!, request);
         }
       });
     } catch (error) {
@@ -650,10 +817,10 @@ export class PartyRoom extends DurableObject<Env> {
   ): Promise<void> {
     await this.serial.run(async () => {
       let now = Date.now();
-      await this.settle(now);
       if (socket.readyState !== WebSocket.OPEN) return;
       const prior = this.attachment(socket);
       if (prior?.playerId) {
+        if (socketIdentityMatches(this.party, prior)) await this.settle(now);
         if (!socketIdentityMatches(this.party, prior))
           this.endSocket(
             socket,
@@ -699,8 +866,10 @@ export class PartyRoom extends DurableObject<Env> {
             401,
           );
         const tokenHash = await hashToken(body.token);
-        await this.settle(Date.now());
         now = Date.now();
+        authenticate(this.party, tokenHash, now);
+        await this.settle(now);
+        this.boundCode();
         if (prior.authDeadline <= now)
           throw new PartyError(
             "SESSION_ENDED",

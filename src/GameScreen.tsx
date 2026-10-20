@@ -624,8 +624,8 @@ export function FinalResult({
       <Scoreboard players={match.players} final />
       <PrimaryButton onClick={onAgain}>New game, same players</PrimaryButton>
       <p className="card-footnote">
-        <Users size={13} /> Names and settings stay. Scores reset. Recent words
-        stay remembered.
+        <Users size={13} /> Names, settings, completed games, and party totals
+        stay. Current scores reset. Recent words stay remembered.
       </p>
     </section>
   );

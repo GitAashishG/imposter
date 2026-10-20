@@ -8,8 +8,9 @@
     "build": "tsc --noEmit && tsc -p worker/tsconfig.json --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0",
     "test": "bun test",
+    "test:integration": "bun scripts/verify-multiplayer.ts",
     "worker:dev": "wrangler dev --port 8787",
-    "worker:deploy": "wrangler deploy"
+    "worker:deploy": "npm test && npm run test:integration && tsc -p worker/tsconfig.json --noEmit && wrangler deploy"
   },
   "dependencies": {
     "@fontsource-variable/dm-sans": "^5.2.6",

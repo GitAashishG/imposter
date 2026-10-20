@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CircleHelp, RotateCcw, ShieldCheck, Trophy } from "lucide-react";
+import { CircleHelp, History, RotateCcw, ShieldCheck, Trophy, X } from "lucide-react";
 import Setup, { loadPreferences, savePreferences } from "./Setup";
 import type { Preferences } from "./Setup";
 import { Eyes, Modal, Rules, Scoreboard } from "./components";
@@ -18,12 +18,13 @@ import { useGame } from "./useGame";
 import { PlayModeSwitch } from "./PlayModeSwitch";
 import { ThemeToggle } from "./Appearance";
 import { DeviceOptions } from "./DeviceOptions";
+import { HistoryPanel } from "./HistoryPanel";
 
 export default function App({ onParty }: { onParty: () => void }) {
-  const [state, dispatch] = useGame();
   const [preferences, setPreferences] = useState(loadPreferences);
+  const [state, dispatch, gameHistory] = useGame(preferences.names);
   const [modal, setModal] = useState<
-    "rules" | "scores" | "reset" | "switch" | null
+    "rules" | "scores" | "history" | "end" | "reset" | "switch" | null
   >(null);
   const playing = state.phase !== "setup";
   const match = "match" in state ? state.match : null;
@@ -60,7 +61,7 @@ export default function App({ onParty }: { onParty: () => void }) {
     "revealed" in state ? state.revealed : null,
   ]);
 
-  function showModal(value: "rules" | "scores" | "reset" | "switch") {
+  function showModal(value: "rules" | "scores" | "history" | "end" | "reset" | "switch") {
     dispatch({ type: "HIDE" });
     setModal(value);
   }
@@ -69,6 +70,12 @@ export default function App({ onParty }: { onParty: () => void }) {
     setPreferences(value);
     savePreferences(value);
     dispatch({ type: "START", names: value.names, settings: value.settings });
+  }
+
+  function changePreferences(value: Preferences) {
+    setPreferences(value);
+    savePreferences(value);
+    dispatch({ type: "ROSTER", names: value.names });
   }
 
   return (
@@ -113,9 +120,18 @@ export default function App({ onParty }: { onParty: () => void }) {
         }}
       />
       <DeviceOptions active={deviceActive} turnKey={turnKey} />
+      <div className="local-party-bar" aria-label="Local party">
+        <button className="secondary-button" onClick={() => showModal("history")}>
+          <History size={16} /> Party history & totals
+          <span className="count-badge">{gameHistory.completedGames}</span>
+        </button>
+        <button className="text-button" onClick={() => showModal("end")}>
+          <X size={15} /> End local party
+        </button>
+      </div>
 
       {state.phase === "setup" ? (
-        <Setup initial={preferences} onStart={start} />
+        <Setup initial={preferences} onChange={changePreferences} onStart={start} />
       ) : (
         <main className="game-layout">
           <div className="game-topbar">
@@ -245,12 +261,43 @@ export default function App({ onParty }: { onParty: () => void }) {
           <Scoreboard players={match.players} />
         </Modal>
       )}
+      {modal === "history" && (
+        <Modal title="This local party’s history." onClose={() => setModal(null)}>
+          <p className="modal-description">
+            Saved only in this browser: up to 20 completed games, final scores,
+            and rules. Current-game points stay separate. New game keeps these
+            totals; changing the roster or ending the local party clears them.
+          </p>
+          <HistoryPanel history={gameHistory} />
+        </Modal>
+      )}
+      {modal === "end" && (
+        <Modal title="End this local party?" onClose={() => setModal(null)}>
+          <p className="modal-description">
+            This clears the current game, completed-game history, and party
+            totals on this device. Your editable names, setup preferences, and
+            recent words stay. Unfinished games are never counted.
+          </p>
+          <div className="modal-actions">
+            <button className="secondary-button" onClick={() => setModal(null)}>
+              Keep this party
+            </button>
+            <button className="danger-button" onClick={() => {
+              setModal(null);
+              dispatch({ type: "END_PARTY" });
+            }}>
+              End local party
+            </button>
+          </div>
+        </Modal>
+      )}
       {modal === "reset" && (
         <Modal title="New game, same players?" onClose={() => setModal(null)}>
           <p className="modal-description">
-            This ends the current game and clears scores, roles, and votes. Your
-            player names and settings stay, and recent words stay remembered.
-            You’ll return to setup before starting round 1.
+            This ends the current game and resets its scores, roles, and votes.
+            Completed games and party totals stay, along with names, settings,
+            and recent words. Unfinished games are not counted. You’ll return
+            to setup before starting round 1.
           </p>
           <div className="modal-actions">
             <button className="secondary-button" onClick={() => setModal(null)}>
@@ -271,9 +318,9 @@ export default function App({ onParty }: { onParty: () => void }) {
       {modal === "switch" && (
         <Modal title="Switch to Own Phones?" onClose={() => setModal(null)}>
           <p className="modal-description">
-            Switching ends this shared-phone game and clears its scores. Your
-            saved names, setup, and recent word history will stay. Everyone can
-            then join the own-phone party on their own device.
+            Switching ends this shared-phone game and clears its current scores.
+            Completed games, party totals, saved names, setup, and recent words
+            stay on this device. Everyone can then join Own Phones separately.
           </p>
           <div className="modal-actions">
             <button className="secondary-button" onClick={() => setModal(null)}>

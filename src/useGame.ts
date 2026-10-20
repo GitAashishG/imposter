@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import {
   applyAwards,
   createRound,
@@ -8,9 +8,52 @@ import {
   resolveLastChance,
   resolveRound,
   validateSetup,
+  migrateSettings,
 } from "./game";
 import type { Outcome, Player, Round, Settings } from "./game";
 import { loadRecentWords, saveRecentWords } from "./recentWords";
+import {
+  emptyHistory,
+  HISTORY_LIMIT,
+  historyView,
+  recordCompletedGame,
+} from "./history";
+import type { SavedGameHistory } from "./history";
+
+const LOCAL_PARTY_KEY = "ko-ho-local-party-v1";
+
+export function localRosterSignature(names: string[]): string {
+  return JSON.stringify(names.map((name) => name.trim().toLowerCase()));
+}
+
+function loadLocalHistory(names: string[]): SavedGameHistory {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LOCAL_PARTY_KEY) ?? "null");
+    if (
+      saved?.version !== 1 ||
+      saved.rosterSignature !== localRosterSignature(names) ||
+      !Array.isArray(saved.history?.games) ||
+      saved.history.games.length > HISTORY_LIMIT ||
+      !Number.isSafeInteger(saved.history.completedGames) ||
+      saved.history.completedGames < saved.history.games.length
+    ) return emptyHistory();
+    let history = emptyHistory();
+    for (const game of [...saved.history.games].reverse()) {
+      const settings = migrateSettings(game.settings);
+      if (!settings || !Array.isArray(game.players)) return emptyHistory();
+      if (validateSetup(game.players.map((player: Player) => player.name), settings))
+        return emptyHistory();
+      // Rebuild through the shared helper: no untrusted extra fields survive.
+      history = recordCompletedGame(
+        history, game.gameId, game.players, settings, game.completedAt,
+      );
+    }
+    if (history.games.length !== saved.history.games.length) return emptyHistory();
+    return { ...history, completedGames: saved.history.completedGames };
+  } catch {
+    return emptyHistory();
+  }
+}
 
 export interface Match {
   gameId: string;
@@ -42,7 +85,9 @@ type Action =
   | { type: "SKIP_GUESS" }
   | { type: "GUESS_TIMEOUT" }
   | { type: "CONTINUE" }
-  | { type: "RESET" };
+  | { type: "RESET" }
+  | { type: "END_PARTY" }
+  | { type: "ROSTER"; names: string[] };
 
 interface Transition {
   action: Action;
@@ -62,7 +107,7 @@ function finishRound(match: Match, outcome: Outcome): State {
 
 function reduceScreen(state: State, transition: Transition): State {
   const { action, now } = transition;
-  if (action.type === "RESET") {
+  if (action.type === "RESET" || action.type === "END_PARTY") {
     return {
       phase: "setup",
       recentWordIds:
@@ -170,21 +215,53 @@ function reduceScreen(state: State, transition: Transition): State {
 interface Store {
   screen: State;
   revision: number;
+  rosterSignature: string;
+  gameHistory: SavedGameHistory;
 }
 
 function reducer(store: Store, transition: Transition): Store {
   // Ignore a second tap or a timer callback from an earlier rendered turn.
   if (transition.expectedRevision !== store.revision) return store;
+  if (transition.action.type === "ROSTER") {
+    if (store.screen.phase !== "setup") return store;
+    const signature = localRosterSignature(transition.action.names);
+    return signature === store.rosterSignature
+      ? store
+      : {
+          ...store,
+          rosterSignature: signature,
+          gameHistory: emptyHistory(),
+          revision: store.revision + 1,
+        };
+  }
   const screen = reduceScreen(store.screen, transition);
-  return screen === store.screen
-    ? store
-    : { screen, revision: store.revision + 1 };
+  if (screen === store.screen) return store;
+  let gameHistory = transition.action.type === "END_PARTY"
+    ? emptyHistory()
+    : store.gameHistory;
+  let rosterSignature = store.rosterSignature;
+  if (transition.action.type === "START") {
+    rosterSignature = localRosterSignature(transition.action.names);
+    if (rosterSignature !== store.rosterSignature) gameHistory = emptyHistory();
+  }
+  if (screen.phase === "final") {
+    gameHistory = recordCompletedGame(
+      gameHistory,
+      screen.match.gameId,
+      screen.match.players,
+      screen.match.settings,
+      transition.now,
+    );
+  }
+  return { screen, rosterSignature, gameHistory, revision: store.revision + 1 };
 }
 
-export function useGame() {
+export function useGame(initialNames: string[]) {
   const [store, send] = useReducer(reducer, undefined, (): Store => ({
     screen: { phase: "setup", recentWordIds: loadRecentWords() },
     revision: 0,
+    rosterSignature: localRosterSignature(initialNames),
+    gameHistory: loadLocalHistory(initialNames),
   }));
   const state = store.screen;
   const dispatch = useCallback(
@@ -238,19 +315,37 @@ export function useGame() {
 
   const match = "match" in state ? state.match : null;
   const chosenRoundKey = match ? `${match.gameId}:${match.round.number}` : null;
-  const history = match?.usedWordIds;
+  const wordHistory = match?.usedWordIds;
   const persistedRound = useRef<string | null>(null);
   useEffect(() => {
     if (
       !chosenRoundKey ||
-      !history ||
+      !wordHistory ||
       persistedRound.current === chosenRoundKey
     )
       return;
     // Only committed round selections are remembered, never reducer replays.
-    saveRecentWords(history);
+    saveRecentWords(wordHistory);
     persistedRound.current = chosenRoundKey;
-  }, [chosenRoundKey, history]);
+  }, [chosenRoundKey, wordHistory]);
+
+  useEffect(() => {
+    try {
+      if (store.gameHistory.completedGames === 0) {
+        localStorage.removeItem(LOCAL_PARTY_KEY);
+      } else {
+        localStorage.setItem(LOCAL_PARTY_KEY, JSON.stringify({
+          version: 1,
+          rosterSignature: store.rosterSignature,
+          history: store.gameHistory,
+        }));
+      }
+    } catch {
+      /* Completed games remain available in memory when storage is disabled. */
+    }
+  }, [store.gameHistory, store.rosterSignature]);
+
+  const gameHistory = useMemo(() => historyView(store.gameHistory), [store.gameHistory]);
 
   useEffect(() => {
     if (state.phase !== "guess") return;
@@ -266,5 +361,5 @@ export function useGame() {
     };
   }, [state, dispatch]);
 
-  return [state, dispatch] as const;
+  return [state, dispatch, gameHistory] as const;
 }

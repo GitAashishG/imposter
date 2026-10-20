@@ -109,8 +109,7 @@
 .device-options[open] > summary::after {
   content: "−";
 }
-.device-options > summary:focus-visible,
-.invite-link-details > summary:focus-visible {
+.device-options > summary:focus-visible {
   outline: 3px solid var(--focus);
   outline-offset: 3px;
   border-radius: 6px;
@@ -207,17 +206,6 @@
   font-size: 11px;
   min-height: 44px;
 }
-.invite-link-details {
-  margin-top: 11px;
-}
-.invite-link-details > summary {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 11px;
-  cursor: pointer;
-  min-height: 44px;
-}
 .invite-link-qr {
   width: fit-content;
   max-width: 100%;
@@ -272,3 +260,40 @@
     justify-content: center;
   }
 }
+
+.discussion-time-control { min-width: 0; width: 100%; }
+.discussion-time-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 5px; align-items: baseline; }
+.discussion-time-heading label { margin: 0; font-size: 11px; color: var(--muted); }
+.discussion-time-heading output { color: var(--orange); font-size: 11px; font-weight: 650; }
+.discussion-time-control input[type="range"] { width: 100%; min-height: 44px; padding: 0; margin: 0; accent-color: var(--orange); cursor: pointer; }
+.discussion-time-bounds { display: flex; justify-content: space-between; color: var(--subtle); font-size: 9px; margin-top: -4px; }
+.discussion-time-control > small { display: block; color: var(--subtle); font-size: 9px; line-height: 1.6; margin-top: 6px; }
+.invite-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.invite-room-code { font-size: 13px; letter-spacing: 1.5px; font-weight: 650; color: var(--ink); background: var(--green-bg); border: 1px solid var(--green-border); padding: 6px 8px; border-radius: 5px; }
+.invite-pin-choice { display: flex; align-items: flex-start; gap: 8px; font-size: 11px; line-height: 1.7; margin-top: 14px; color: var(--ink); }
+.invite-link .invite-pin-choice input { width: 18px; height: 18px; min-height: 18px; margin: 1px 0 0; flex: 0 0 18px; accent-color: var(--orange); }
+.invite-link .invite-pin-warning { color: var(--warning); background: var(--warning-bg); padding: 10px; border-radius: 6px; }
+.invite-share-button { width: 100%; min-height: 44px; border: 1px solid var(--button-border); background: var(--button-bg); color: var(--on-accent); display: flex; align-items: center; justify-content: center; gap: 8px; border-radius: 6px; padding: 11px; font-size: 12px; margin: 14px 0 10px; }
+.invite-link .invite-privacy-note { font-size: 10px; line-height: 1.8; }
+.invite-privacy-note svg { vertical-align: middle; margin-right: 4px; }
+.history-status { color: var(--muted); font-size: 13px; line-height: 1.8; padding: 12px 0; }
+.history-status h3 { font-family: var(--display); font-weight: 500; font-size: 24px; color: var(--ink); margin: 13px 0 8px; }
+.history-status .secondary-button { margin-top: 14px; }
+.history-panel > h3 { font-size: 14px; font-weight: 650; margin: 23px 0 12px; }
+.history-explanation { font-size: 12px; line-height: 1.8; color: var(--muted); }
+.history-table-wrap { width: 100%; overflow-x: auto; border: 1px solid var(--line); border-radius: 7px; }
+.history-totals { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 11px; }
+.history-totals th, .history-totals td { padding: 10px 7px; border-bottom: 1px solid var(--line); text-align: right; overflow-wrap: anywhere; }
+.history-totals th:first-child { width: 43%; text-align: left; }
+.history-totals thead { color: var(--muted); background: var(--surface-soft); font-size: 10px; }
+.history-totals tbody th { font-weight: 550; }
+.history-totals tr:last-child > * { border-bottom: 0; }
+.history-small-note { color: var(--subtle); font-size: 10px; line-height: 1.8; margin-top: 11px; }
+.history-games { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.history-games > li { padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); }
+.history-game-heading { display: flex; flex-wrap: wrap; gap: 6px 12px; justify-content: space-between; font-size: 10px; color: var(--muted); }
+.history-game-winners { display: flex; align-items: flex-start; gap: 6px; color: var(--gold); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; margin-top: 12px; }
+.history-games ul { margin: 11px 0 0; padding: 0; list-style: none; }
+.history-games ul li { display: flex; justify-content: space-between; gap: 12px; font-size: 11px; padding: 5px 0; }
+.history-games ul li > span { min-width: 0; overflow-wrap: anywhere; }
+.history-games ul strong { flex-shrink: 0; font-weight: 550; }

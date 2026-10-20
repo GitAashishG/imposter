@@ -164,9 +164,12 @@ export function Rules() {
       <div className="notice">
         <ShieldCheck size={19} />
         <p>
-          No accounts or uploads in Pass & Play. This device saves your setup,
-          appearance, comfort options, and recent word IDs to avoid repeats
-          across games. Refreshing ends the current shared-phone game.
+          No accounts or uploads in Pass & Play. This device saves setup,
+          appearance, comfort options, recent word IDs, and the latest 20 completed
+          games with final scores and rules. New game keeps party totals; changing
+          or reordering players or choosing End local party clears that history.
+          Words, roles, and ballots are not kept in history. Refreshing ends the
+          current shared-phone game.
         </p>
       </div>
     </div>

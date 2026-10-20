@@ -675,6 +675,26 @@ select {
   background: var(--subtle);
 }
 /* Shared-phone game */
+.local-party-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px 20px;
+  margin: 18px 0 0;
+}
+.local-party-bar .secondary-button {
+  min-height: 44px;
+  font-size: 11px;
+  flex-wrap: wrap;
+}
+.local-party-bar .text-button {
+  min-height: 44px;
+  color: var(--muted);
+}
+.local-party-bar .count-badge {
+  margin-left: 2px;
+}
 .game-layout {
   max-width: 640px;
   margin: 0 auto;

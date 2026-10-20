@@ -21,6 +21,7 @@ import type { Settings } from "./game";
 import { Eyes, PrimaryButton } from "./components";
 import { SUGGESTED_PLAYER_NAMES } from "./playerNames";
 import { GameOptions } from "./GameOptions";
+import { DiscussionTimeControl } from "./DiscussionTime";
 
 export interface Preferences {
   names: string[];
@@ -71,12 +72,15 @@ const packIcons = {
 export default function Setup({
   initial,
   onStart,
+  onChange,
 }: {
   initial: Preferences;
   onStart: (preferences: Preferences) => void;
+  onChange: (preferences: Preferences) => void;
 }) {
-  const [names, setNames] = useState(initial.names);
-  const [settings, setSettings] = useState(initial.settings);
+  const { names, settings } = initial;
+  const setNames = (next: string[]) => onChange({ names: next, settings });
+  const setSettings = (next: Settings) => onChange({ names, settings: next });
   const [error, setError] = useState<string | null>(null);
 
   function togglePack(id: PackId) {
@@ -182,7 +186,10 @@ export default function Setup({
               <span className="section-number">01</span> Who’s playing?{" "}
               <span className="count-badge">{names.length}</span>
             </legend>
-            <p className="field-hint">Real names. Nicknames. That one dai.</p>
+            <p className="field-hint">
+              Real names. Nicknames. That one dai. Changing or reordering this
+              roster starts a new local party and clears its history.
+            </p>
             <div className="player-inputs">
               {names.map((name, index) => (
                 <div className="player-input" key={index}>
@@ -306,27 +313,12 @@ export default function Setup({
                   ))}
                 </div>
               </div>
-              <div>
-                <label htmlFor="discussion-time">Discussion time</label>
-                <select
-                  id="discussion-time"
-                  value={settings.discussionSeconds}
-                  onChange={(event) =>
-                    setSettings({
-                      ...settings,
-                      discussionSeconds: Number(event.target.value),
-                    })
-                  }
-                >
-                  {[30, 60, 90, 120].map((seconds) => (
-                    <option key={seconds} value={seconds}>
-                      {seconds < 60
-                        ? `${seconds} seconds`
-                        : `${seconds / 60} ${seconds === 60 ? "minute" : "minutes"}`}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <DiscussionTimeControl
+                seconds={settings.discussionSeconds}
+                onChange={(discussionSeconds) =>
+                  setSettings({ ...settings, discussionSeconds })
+                }
+              />
             </div>
             <div className="imposter-note">
               <span className="mini-face">

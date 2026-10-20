@@ -50,17 +50,15 @@ describe("setup validation", () => {
   test("accepts valid settings, trimmed names, and every offered option", () => {
     const names = [" Asha ", "Bikash", "चन्द्र"];
     for (const rounds of [3, 5, 7]) {
-      for (const discussionSeconds of [30, 60, 90, 120]) {
-        expect(
-          validateSetup(names, {
-            packIds: PACKS.map((pack) => pack.id),
-            rounds,
-            discussionSeconds,
-            clueCycles: 1,
-            lastChanceGuess: false,
-          }),
-        ).toBeNull();
-      }
+      expect(
+        validateSetup(names, {
+          packIds: PACKS.map((pack) => pack.id),
+          rounds,
+          discussionSeconds: 60,
+          clueCycles: 1,
+          lastChanceGuess: false,
+        }),
+      ).toBeNull();
     }
     expect(names[0]).toBe(" Asha ");
   });
@@ -118,10 +116,16 @@ describe("setup validation", () => {
         validateSetup(names, { ...makeSettings(), rounds }),
       ).not.toBeNull();
     }
-    for (const discussionSeconds of [0, 45, 61, Infinity]) {
+    for (const discussionSeconds of [-60, 0, 30, 45, 60.5, 61, 90, 901, 960, Infinity]) {
       expect(
         validateSetup(names, { ...makeSettings(), discussionSeconds }),
       ).not.toBeNull();
+    }
+  });
+
+  test("accepts every whole minute from one through fifteen", () => {
+    for (let minutes = 1; minutes <= 15; minutes += 1) {
+      expect(validateSetup(["Aashish", "Ashu", "Ashim"], { ...makeSettings(), discussionSeconds: minutes * 60 })).toBeNull();
     }
   });
 });
@@ -547,7 +551,7 @@ describe("optional game rules", () => {
     }
   });
 
-  test("upgrades saved settings without changing the group's existing selections", () => {
+  test("upgrades saved settings and rounds legacy half-minute choices without mutating them", () => {
     const saved: Pick<Settings, "packIds" | "rounds" | "discussionSeconds"> = {
       packIds: ["culture"],
       rounds: 7,
@@ -555,6 +559,7 @@ describe("optional game rules", () => {
     };
     expect(migrateSettings(saved)).toEqual({
       ...saved,
+      discussionSeconds: 120,
       clueCycles: 1,
       lastChanceGuess: false,
     });
@@ -565,7 +570,7 @@ describe("optional game rules", () => {
     });
     expect(
       migrateSettings({ ...saved, clueCycles: 2, lastChanceGuess: true }),
-    ).toEqual({ ...saved, clueCycles: 2, lastChanceGuess: true });
+    ).toEqual({ ...saved, discussionSeconds: 120, clueCycles: 2, lastChanceGuess: true });
     expect(migrateSettings({ ...saved, rounds: 4 })).toBeNull();
     expect(migrateSettings({ ...saved, clueCycles: 3 })).toBeNull();
   });

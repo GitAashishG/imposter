@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { PartyCommand } from "../src/party/protocol";
 import type { Settings } from "../src/game";
+import { historyView } from "../src/history";
 import {
   PARTY_TTL_MS,
   PartyError,
@@ -306,8 +307,11 @@ describe("admission and identity", () => {
     rejects("SESSION_ENDED", () =>
       authenticate(state, "hash-host", state.expiresAt),
     );
-    expect(publicInfo(state, state.expiresAt)).toEqual({ exists: false });
-    rejects("SESSION_ENDED", () => project(removed, "b", 2_000, online));
+    expect(publicInfo(state, state.expiresAt, "ABCDEFGH")).toEqual({
+      exists: false,
+      roomCode: "ABCDEFGH",
+    });
+    rejects("SESSION_ENDED", () => project(removed, "b", 2_000, online, "ABCDEFGH"));
   });
 });
 
@@ -433,7 +437,9 @@ describe("private projection and presence", () => {
   test("host has no privileged role visibility and only result reveals the imposter/word", () => {
     for (const state of [roles(), clues(), discussion(), voting()]) {
       expect(state.round!.imposterId).toBe("host");
-      const host = project(state, "host", 6_000, online);
+      const host = project(state, "host", 6_000, online, "ABCDEFGH");
+      expect(host.roomCode).toBe("ABCDEFGH");
+      expect(host.completedGames).toBe(0);
       expect(host.pin).toBe("123456");
       expect(host.ownRole).toEqual({ isImposter: true, word: null });
       expect(host.result).toBeNull();
@@ -442,7 +448,7 @@ describe("private projection and presence", () => {
       expect(hostJson).not.toContain("imposterId");
       expect(hostJson).not.toContain("tokenHash");
       expect(hostJson).not.toContain("votes");
-      const crew = project(state, "b", 6_000, online);
+      const crew = project(state, "b", 6_000, online, "ABCDEFGH");
       expect(crew).not.toHaveProperty("pin");
       expect(crew.ownRole).toEqual({
         isImposter: false,
@@ -461,7 +467,7 @@ describe("private projection and presence", () => {
         ]);
       }
     }
-    const result = project(caught(), "b", 8_000, online);
+    const result = project(caught(), "b", 8_000, online, "ABCDEFGH");
     expect(result.ownRole).toBeNull();
     expect(result.result!.imposterId).toBe("host");
     expect(result.result!.outcome.caught).toBe(true);
@@ -476,7 +482,7 @@ describe("private projection and presence", () => {
       7_000,
     );
     for (const self of ids) {
-      const view = project(state, self, 7_000, online);
+      const view = project(state, self, 7_000, online, "ABCDEFGH");
       expect(view.players.find((player) => player.id === "b")!.hasVoted).toBe(
         true,
       );
@@ -495,7 +501,7 @@ describe("private projection and presence", () => {
         id,
         7_000,
       );
-    const view = project(state, "host", 7_000, online);
+    const view = project(state, "host", 7_000, online, "ABCDEFGH");
     expect(view.result!.outcome.voteCounts).toEqual({
       host: 3,
       b: 1,
@@ -508,8 +514,8 @@ describe("private projection and presence", () => {
 
   test("presence comes only from live connection identities and never changes the revision", () => {
     const state = roles();
-    const offline = project(state, "host", 3_000, new Set());
-    const reconnect = project(state, "host", 4_000, new Set(["host", "c"]));
+    const offline = project(state, "host", 3_000, new Set(), "ABCDEFGH");
+    const reconnect = project(state, "host", 4_000, new Set(["host", "c"]), "ABCDEFGH");
     expect(offline.players.every((player) => !player.connected)).toBe(true);
     expect(
       reconnect.players
@@ -519,8 +525,9 @@ describe("private projection and presence", () => {
     expect(reconnect.revision).toBe(offline.revision);
     expect(reconnect.serverNow).toBe(4_000);
     expect(reconnect.ownRole).toEqual(offline.ownRole);
-    expect(publicInfo(state, 4_000)).toEqual({
+    expect(publicInfo(state, 4_000, "ABCDEFGH")).toEqual({
       exists: true,
+      roomCode: "ABCDEFGH",
       phase: "role",
       playerCount: 4,
       abandonedExpiresAt: null,
@@ -532,7 +539,7 @@ describe("authoritative discussion timing", () => {
   test("uses elapsed server time, pauses, resumes and never auto-advances at zero", () => {
     const state = discussion();
     expect(state.discussion.deadline).toBe(65_000);
-    expect(project(state, "host", 15_000, online).discussion.remainingMs).toBe(
+    expect(project(state, "host", 15_000, online, "ABCDEFGH").discussion.remainingMs).toBe(
       50_000,
     );
     const paused = act(
@@ -542,7 +549,7 @@ describe("authoritative discussion timing", () => {
       20_000,
     );
     expect(paused.discussion).toEqual({ deadline: null, remainingMs: 45_000 });
-    expect(project(paused, "b", 100_000, online).discussion.remainingMs).toBe(
+    expect(project(paused, "b", 100_000, online, "ABCDEFGH").discussion.remainingMs).toBe(
       45_000,
     );
     expect(
@@ -555,7 +562,7 @@ describe("authoritative discussion timing", () => {
       100_000,
     );
     expect(resumed.discussion.deadline).toBe(145_000);
-    const atZero = project(resumed, "b", 150_000, online);
+    const atZero = project(resumed, "b", 150_000, online, "ABCDEFGH");
     expect(atZero.discussion.remainingMs).toBe(0);
     expect(atZero.phase).toBe("discussion");
     expect(
@@ -568,7 +575,7 @@ describe("authoritative discussion timing", () => {
     const state = roles();
     const ready = act(state, { type: "ready", roundNumber: 1 }, "b", 3_000);
     const expires = ready.expiresAt;
-    project(ready, "b", expires - 1, online);
+    project(ready, "b", expires - 1, online, "ABCDEFGH");
     expect(
       act(ready, { type: "ready", roundNumber: 1 }, "b", expires - 1).expiresAt,
     ).toBe(expires);
@@ -685,8 +692,14 @@ describe("voting, scoring and match lifecycle", () => {
     }
     expect(state.phase).toBe("final");
     expect(state.players.map((player) => player.score)).toEqual([0, 3, 3, 3]);
+    expect(state.gameHistory.completedGames).toBe(1);
+    expect(state.gameHistory.games[0]?.players).toEqual(
+      state.players.map(({ id, name, score }) => ({ id, name, score })),
+    );
+    expect(state.gameHistory.games[0]?.winnerIds).toEqual(["b", "c", "d"]);
+    expect(project(state, "host", 9_000, online, "ABCDEFGH").completedGames).toBe(1);
     expect(
-      project(state, "host", 9_000, online).players.map((player) => player.id),
+      project(state, "host", 9_000, online, "ABCDEFGH").players.map((player) => player.id),
     ).toEqual(["b", "c", "d", "host"]);
     rejects("WRONG_PHASE", () =>
       act(state, { type: "next-round", roundNumber: 3 }, "host", 9_000),
@@ -696,6 +709,7 @@ describe("voting, scoring and match lifecycle", () => {
     expect(reset.players.every((player) => player.score === 0)).toBe(true);
     expect(reset.round).toBeNull();
     expect(histories.get(reset)).toEqual([...words]);
+    expect(reset.gameHistory).toBe(state.gameHistory);
     const restarted = act(reset, { type: "start" }, "host", 11_000);
     expect(restarted.round!.number).toBe(1);
     expect(words.has(restarted.round!.word.id)).toBe(false);
@@ -708,12 +722,90 @@ describe("voting, scoring and match lifecycle", () => {
       expect(reset.round).toBeNull();
       expect(reset.outcome).toBeNull();
       expect(reset.readyIds).toEqual([]);
+      expect(reset.gameHistory).toEqual({ completedGames: 0, games: [] });
       expect(reset.players.map((player) => player.tokenHash)).toEqual(
         lobby().players.map((player) => player.tokenHash),
       );
       expect(authenticate(reset, "hash-b", 10_000)).toBe("b");
-      expect(project(reset, "b", 10_000, online).ownRole).toBeNull();
+      expect(project(reset, "b", 10_000, online, "ABCDEFGH").ownRole).toBeNull();
     }
+  });
+});
+
+describe("completed-game history and joining PIN rotation", () => {
+  function complete(initial: PartyState): PartyState {
+    let state = act(initial, { type: "start" });
+    for (let number = 1; number <= state.settings.rounds; number++) {
+      state = caught(voting(discussion(clues(state))));
+      state = act(state, { type: "next-round", roundNumber: number }, "host", 8_000);
+    }
+    return state;
+  }
+
+  test("empty parties have no totals; only finalization records actual final scores once", () => {
+    const initial = lobby();
+    expect(historyView(initial.gameHistory).totals).toEqual([]);
+    const unfinished = caught();
+    expect(unfinished.gameHistory.completedGames).toBe(0);
+    const final = complete(initial);
+    expect(final.gameHistory.games[0]?.gameId).toBe(final.gameId);
+    expect(final.gameHistory.games[0]?.completedAt).toBe(8_000);
+    expect(final.gameHistory.games[0]?.settings).toEqual(final.settings);
+    expect(historyView(final.gameHistory).totals).toEqual([
+      { id: "b", name: "Bikash", gamesPlayed: 1, wins: 1, points: 3 },
+      { id: "c", name: "Chandra", gamesPlayed: 1, wins: 1, points: 3 },
+      { id: "d", name: "Dipa", gamesPlayed: 1, wins: 1, points: 3 },
+      { id: "host", name: "Asha", gamesPlayed: 1, wins: 0, points: 0 },
+    ]);
+    rejects("WRONG_PHASE", () => act(final, { type: "next-round", roundNumber: 3 }));
+    const rotated = act(final, { type: "rotate-pin", pin: "654321" });
+    expect(rotated.gameHistory).toBe(final.gameHistory);
+    const json = JSON.stringify(final.gameHistory);
+    for (const secret of ["tokenHash", "hash-host", "word", "imposterId", "votes", "awards", "hostRecoveryCode", "pin"])
+      expect(json).not.toContain(secret);
+    expect(Object.keys(final.gameHistory.games[0]!.players[0]!)).toEqual(["id", "name", "score"]);
+  });
+
+  test("retains only 20 games and their totals while new games retain and fresh parties clear history", () => {
+    let state = lobby();
+    let oldestGameId = "";
+    for (let index = 0; index < 21; index++) {
+      state = complete(state);
+      if (index === 0) oldestGameId = state.gameId;
+      if (index < 20) state = act(state, { type: "new-game" });
+    }
+    expect(state.gameHistory.completedGames).toBe(21);
+    expect(state.gameHistory.games).toHaveLength(20);
+    expect(state.gameHistory.games.some((game) => game.gameId === oldestGameId)).toBe(false);
+    for (const total of historyView(state.gameHistory).totals) {
+      expect(total.gamesPlayed).toBe(20);
+      expect(total.points).toBe(total.id === "host" ? 0 : 60);
+      expect(total.wins).toBe(total.id === "host" ? 0 : 20);
+    }
+    const reset = act(state, { type: "new-game" });
+    expect(reset.gameHistory).toBe(state.gameHistory);
+    const fresh = applyAction(reset, "host", {
+      type: "fresh-party", pin: "654321", gameId: reset.gameId,
+    }, 9_000, online, zero, { freshHost: { id: "fresh", tokenHash: "fresh-hash" } })!;
+    expect(fresh.gameHistory).toEqual({ completedGames: 0, games: [] });
+  });
+
+  test("only the host rotates to a different valid PIN without disturbing live game state or seats", () => {
+    const state = voting();
+    const rotated = act(state, { type: "rotate-pin", pin: "654321" });
+    expect(rotated.pin).toBe("654321");
+    expect(rotated.gameId).toBe(state.gameId);
+    expect(rotated.players).toBe(state.players);
+    expect(rotated.round).toBe(state.round);
+    expect(rotated.discussion).toBe(state.discussion);
+    expect(rotated.hostRecoveryCode).toBe(state.hostRecoveryCode);
+    expect(rotated.notice?.message).toContain("Old invitations no longer work");
+    rejects("HOST_ONLY", () => act(state, { type: "rotate-pin", pin: "654321" }, "b"));
+    rejects("PIN_UNCHANGED", () => act(state, { type: "rotate-pin", pin: "123456" }));
+    rejects("INVALID_PIN", () => act(state, { type: "rotate-pin", pin: "12345" }));
+    const admission = act(lobby(), { type: "rotate-pin", pin: "654321" });
+    rejects("WRONG_PIN", () => joinParty(admission, { id: "new", name: "New", tokenHash: "new" }, "123456", 3_000));
+    expect(joinParty(admission, { id: "new", name: "New", tokenHash: "new" }, "654321", 3_000).players).toHaveLength(5);
   });
 });
 
@@ -794,20 +886,20 @@ describe("persisted round recovery", () => {
     const original = discussion();
     const restored = JSON.parse(JSON.stringify(original)) as PartyState;
     expect(authenticate(restored, "hash-host", 8_000)).toBe("host");
-    expect(project(restored, "host", 8_000, new Set()).ownRole).toEqual({
+    expect(project(restored, "host", 8_000, new Set(), "ABCDEFGH").ownRole).toEqual({
       isImposter: true,
       word: null,
     });
-    expect(project(restored, "b", 8_000, new Set()).ownRole).toEqual({
+    expect(project(restored, "b", 8_000, new Set(), "ABCDEFGH").ownRole).toEqual({
       isImposter: false,
       word: original.round!.word,
     });
-    expect(project(restored, "b", 8_000, new Set()).discussion).toEqual({
+    expect(project(restored, "b", 8_000, new Set(), "ABCDEFGH").discussion).toEqual({
       deadline: 65_000,
       remainingMs: 57_000,
     });
     expect(
-      project(restored, "host", 8_000, new Set()).players.every(
+      project(restored, "host", 8_000, new Set(), "ABCDEFGH").players.every(
         (player) => !player.connected,
       ),
     ).toBe(true);

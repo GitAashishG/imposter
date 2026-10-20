@@ -21,10 +21,12 @@ import type {
   PartyPublicInfo,
   PartySnapshot,
 } from "../src/party/protocol";
+import { emptyHistory, recordCompletedGame } from "../src/history";
+import type { SavedGameHistory } from "../src/history";
 
 export const PARTY_TTL_MS = 12 * 60 * 60 * 1000;
 export const ABANDONED_TTL_MS = 15 * 60 * 1000;
-export const PARTY_SCHEMA_VERSION = 2;
+export const PARTY_SCHEMA_VERSION = 3;
 
 export class PartyError extends Error {
   constructor(
@@ -54,6 +56,7 @@ export interface PartyState {
   phase: PartyPhase;
   players: Member[];
   settings: Settings;
+  gameHistory: SavedGameHistory;
   round: Round | null;
   outcome: Outcome | null;
   readyIds: string[];
@@ -139,6 +142,7 @@ export function validateAction(value: unknown): PartyAction {
     "fresh-party": ["pin"],
     "transfer-host": ["playerId"],
     "rotate-recovery": [],
+    "rotate-pin": ["pin"],
     "remove-player": ["playerId"],
     leave: [],
     "end-party": [],
@@ -190,7 +194,8 @@ export function validateAction(value: unknown): PartyAction {
       settings: validateSettings(candidate.settings),
     };
   }
-  if (candidate.type === "fresh-party") validatePin(candidate.pin);
+  if (candidate.type === "fresh-party" || candidate.type === "rotate-pin")
+    validatePin(candidate.pin);
   if (
     candidate.type === "guess-word" &&
     (typeof candidate.guess !== "string" ||
@@ -228,6 +233,7 @@ export function createParty(
       },
     ],
     settings: validateSettings(settings),
+    gameHistory: emptyHistory(),
     round: null,
     outcome: null,
     readyIds: [],
@@ -267,15 +273,17 @@ export function authenticate(
 export function publicInfo(
   state: PartyState | null,
   now: number,
+  roomCode: string,
 ): PartyPublicInfo {
   return state && !isExpired(state, now)
     ? {
         exists: true,
+        roomCode,
         phase: state.phase,
         playerCount: state.players.length,
         abandonedExpiresAt: state.abandonedExpiresAt,
       }
-    : { exists: false };
+    : { exists: false, roomCode };
 }
 
 function touch(state: PartyState, now: number): PartyState {
@@ -471,7 +479,7 @@ function validHistory(value: unknown): string[] {
     : [];
 }
 
-/** One explicit persisted-v1 upgrade. It never resets a live round, credential hash, or identity. */
+/** Upgrade persisted parties without resetting an active round, clock, or seat. */
 export function migrateStoredParty(
   value: unknown,
   storedHistory: unknown,
@@ -486,13 +494,16 @@ export function migrateStoredParty(
   const saved = object(value);
   if (saved.schemaVersion === PARTY_SCHEMA_VERSION)
     return { party: saved as unknown as PartyState, history, legacy: false };
-  if (saved.schemaVersion !== undefined && saved.schemaVersion !== 1)
-    throw new Error("Unsupported party schema.");
+  if (
+    saved.schemaVersion !== undefined &&
+    saved.schemaVersion !== 1 &&
+    saved.schemaVersion !== 2
+  ) throw new Error("Unsupported party schema.");
   const settings = migrateSettings(saved.settings);
   if (!settings) throw new Error("Invalid stored party settings.");
   const { usedWordIds, ...retained } = saved;
   const outcome = saved.outcome
-    ? { ...object(saved.outcome), guessResult: null }
+    ? { guessResult: null, ...object(saved.outcome) }
     : null;
   return {
     legacy: true,
@@ -500,13 +511,16 @@ export function migrateStoredParty(
     party: {
       ...retained,
       schemaVersion: PARTY_SCHEMA_VERSION,
-      gameId: crypto.randomUUID(),
-      hostRecoveryCode: makeRecoveryCode(),
+      gameId: saved.gameId ?? crypto.randomUUID(),
+      hostRecoveryCode: saved.hostRecoveryCode ?? makeRecoveryCode(),
+      gameHistory: saved.gameHistory ?? emptyHistory(),
       settings,
       outcome,
-      guessDeadline: null,
-      abandonedExpiresAt: now + ABANDONED_TTL_MS,
-      notice: null,
+      guessDeadline: saved.guessDeadline ?? null,
+      abandonedExpiresAt: saved.abandonedExpiresAt === undefined
+        ? now + ABANDONED_TTL_MS
+        : saved.abandonedExpiresAt,
+      notice: saved.notice ?? null,
     } as unknown as PartyState,
   };
 }
@@ -789,7 +803,17 @@ export function applyAction(
       requirePhase(state, "result");
       next =
         state.round!.number === state.settings.rounds
-          ? { ...state, phase: "final" }
+          ? {
+              ...state,
+              phase: "final",
+              gameHistory: recordCompletedGame(
+                state.gameHistory,
+                state.gameId,
+                state.players,
+                state.settings,
+                now,
+              ),
+            }
           : beginRound(
               state,
               state.round!.number + 1,
@@ -857,6 +881,17 @@ export function applyAction(
         notice: notice("The host rotated the private recovery code."),
       };
       break;
+    case "rotate-pin":
+      if (pinMatches(state.pin, action.pin))
+        fail("PIN_UNCHANGED", "Choose a different joining PIN.");
+      next = {
+        ...state,
+        pin: action.pin,
+        notice: notice(
+          "The host changed the joining PIN. Old invitations no longer work; admitted players keep their seats.",
+        ),
+      };
+      break;
     case "remove-player":
       requirePhase(state, "lobby");
       if (action.playerId === state.hostId)
@@ -890,6 +925,7 @@ export function project(
   selfId: string,
   now: number,
   connected: ReadonlySet<string>,
+  roomCode: string,
 ): PartySnapshot {
   requireParty(state, now);
   if (!state.players.some((player) => player.id === selfId))
@@ -905,6 +941,7 @@ export function project(
     state.phase === "final" ? rankPlayers(state.players) : state.players;
   return {
     id: state.id,
+    roomCode,
     gameId: state.gameId,
     revision: state.revision,
     phase: state.phase,
@@ -912,6 +949,7 @@ export function project(
     expiresAt: state.expiresAt,
     abandonedExpiresAt: state.abandonedExpiresAt,
     notice: state.notice ? { ...state.notice } : null,
+    completedGames: state.gameHistory.completedGames,
     selfId,
     hostId: state.hostId,
     ...(selfId === state.hostId

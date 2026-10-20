@@ -84,8 +84,8 @@ export function validateSetup(
     return "Choose at least one available word pack.";
   }
   if (![3, 5, 7].includes(settings.rounds)) return "Choose 3, 5, or 7 rounds.";
-  if (![30, 60, 90, 120].includes(settings.discussionSeconds)) {
-    return "Choose a discussion time of 30, 60, 90, or 120 seconds.";
+  if (!Number.isInteger(settings.discussionSeconds) || settings.discussionSeconds < 60 || settings.discussionSeconds > 900 || settings.discussionSeconds % 60 !== 0) {
+    return "Choose a discussion time from 1 to 15 whole minutes.";
   }
   if (settings.clueCycles !== 1 && settings.clueCycles !== 2) {
     return "Choose one or two clue cycles.";
@@ -102,6 +102,7 @@ export function migrateSettings(value: unknown): Settings | null {
   const saved = value as Record<string, unknown>;
   const candidate = {
     ...saved,
+    discussionSeconds: saved.discussionSeconds === 30 ? 60 : saved.discussionSeconds === 90 ? 120 : saved.discussionSeconds,
     clueCycles: saved.clueCycles ?? 1,
     lastChanceGuess: saved.lastChanceGuess ?? false,
   } as unknown as Settings;
