@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { FormEvent } from "react";
 import {
   Check,
@@ -18,26 +18,24 @@ import {
 import { Eyes, PrimaryButton, Scoreboard } from "../components";
 import { PACKS } from "../data";
 import type { Settings } from "../game";
-import { rankPlayers } from "../game";
+import { DEFAULT_SETTINGS, rankPlayers } from "../game";
+import { GameOptions } from "../GameOptions";
+import { InviteLink } from "../InviteLink";
+import { copyText } from "../clipboard";
+import { generatePin, normalizeRecoveryCode } from "./joining";
 import { SUGGESTED_PLAYER_NAMES } from "../playerNames";
 import type {
-  PartyAction,
+  PartyCommand,
   PartyPlayer,
   PartyPublicInfo,
   PartySnapshot,
   PrivateRole,
 } from "./protocol";
 
-export const DEFAULT_PARTY_SETTINGS: Settings = {
-  packIds: PACKS.map((pack) => pack.id),
-  rounds: 5,
-  discussionSeconds: 60,
-};
-
 type RoundProps = {
   snapshot: PartySnapshot;
   safe: boolean;
-  onAction: (action: PartyAction) => void;
+  onAction: (action: PartyCommand) => void;
 };
 
 export function PartySettings({
@@ -121,7 +119,210 @@ export function PartySettings({
           </select>
         </label>
       </div>
+      <GameOptions
+        settings={settings}
+        onChange={onChange}
+        disabled={disabled}
+      />
     </fieldset>
+  );
+}
+
+export function PartySecret({
+  label,
+  value,
+  help,
+  disabled = false,
+  hidden = false,
+}: {
+  label: string;
+  value: string;
+  help: string;
+  disabled?: boolean;
+  hidden?: boolean;
+}) {
+  const id = useId();
+  const [show, setShow] = useState(false);
+  const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  useEffect(() => {
+    const hide = () => {
+      setShow(false);
+      setCopyStatus(null);
+    };
+    window.addEventListener("blur", hide);
+    document.addEventListener("visibilitychange", hide);
+    return () => {
+      window.removeEventListener("blur", hide);
+      document.removeEventListener("visibilitychange", hide);
+    };
+  }, []);
+  useEffect(() => {
+    setShow(false);
+    setCopyStatus(null);
+  }, [value, hidden, disabled]);
+  return (
+    <div className="party-secret-control">
+      <label className="party-field" htmlFor={id}>
+        {label}
+        <input
+          id={id}
+          type={show && !hidden && !disabled ? "text" : "password"}
+          value={hidden || disabled ? "" : value}
+          placeholder="Hidden"
+          readOnly
+          autoComplete="off"
+          spellCheck={false}
+          disabled={disabled || hidden}
+          onFocus={(event) => event.currentTarget.select()}
+        />
+      </label>
+      <div className="party-control-row">
+        <button
+          type="button"
+          className="party-button"
+          aria-pressed={show && !hidden && !disabled}
+          disabled={disabled || hidden}
+          onClick={() => setShow(!show)}
+        >
+          {show ? <EyeOff size={16} /> : <Eye size={16} />}
+          {show ? `Hide ${label.toLowerCase()}` : `Show ${label.toLowerCase()}`}
+        </button>
+        <button
+          type="button"
+          className="party-button"
+          disabled={disabled || hidden}
+          onClick={async () => {
+            const copied = await copyText(value);
+            setCopyStatus(
+              copied
+                ? "Copied. Keep it private."
+                : "Copy is unavailable. Show the value, select it, then use your device’s Copy command.",
+            );
+          }}
+        >
+          Copy {label.toLowerCase()}
+        </button>
+      </div>
+      <p className="party-help">{help}</p>
+      {copyStatus && !hidden && !disabled && (
+        <p className="party-help" role="status">
+          {copyStatus}
+        </p>
+      )}
+    </div>
+  );
+}
+
+export function PartyPinField({
+  value,
+  onChange,
+  disabled,
+  creating = false,
+  hidden = false,
+}: {
+  value: string;
+  onChange: (pin: string) => void;
+  disabled: boolean;
+  creating?: boolean;
+  hidden?: boolean;
+}) {
+  const id = useId();
+  const [show, setShow] = useState(false);
+  const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  useEffect(() => {
+    const hide = () => setShow(false);
+    window.addEventListener("blur", hide);
+    document.addEventListener("visibilitychange", hide);
+    return () => {
+      window.removeEventListener("blur", hide);
+      document.removeEventListener("visibilitychange", hide);
+    };
+  }, []);
+  useEffect(() => {
+    if (hidden) {
+      setShow(false);
+      setCopyStatus(null);
+    }
+  }, [hidden]);
+  return (
+    <div>
+      <label className="party-field" htmlFor={id}>
+        {creating ? "Your party PIN" : "Party PIN"}
+        <input
+          id={id}
+          className="party-pin-input"
+          value={hidden ? "" : value}
+          type={show && !hidden ? "text" : "password"}
+          inputMode="numeric"
+          autoComplete="off"
+          pattern="[0-9]{6}"
+          minLength={6}
+          maxLength={6}
+          required
+          disabled={disabled || hidden}
+          aria-describedby={`${id}-help`}
+          onChange={(event) => {
+            setCopyStatus(null);
+            onChange(event.target.value.replace(/[^0-9]/g, "").slice(0, 6));
+          }}
+        />
+      </label>
+      <div className="party-control-row">
+        <button
+          type="button"
+          className="party-button"
+          disabled={disabled || hidden}
+          aria-pressed={show && !hidden}
+          onClick={() => setShow(!show)}
+        >
+          {show ? <EyeOff size={16} /> : <Eye size={16} />}
+          {show ? "Hide PIN" : "Show PIN"}
+        </button>
+        {creating && (
+          <>
+            <button
+              type="button"
+              className="party-button"
+              disabled={disabled || hidden}
+              onClick={() => {
+                onChange(generatePin());
+                setCopyStatus(null);
+              }}
+            >
+              Generate another PIN
+            </button>
+            <button
+              type="button"
+              className="party-button"
+              disabled={disabled || hidden || value.length !== 6}
+              onClick={async () => {
+                const copied = await copyText(value);
+                setCopyStatus(
+                  copied
+                    ? "PIN copied. Share it only with your group."
+                    : "Copy is unavailable. Show the PIN, select the digits, then use your device’s Copy command.",
+                );
+              }}
+            >
+              Copy PIN
+            </button>
+          </>
+        )}
+      </div>
+      <p id={`${id}-help`} className="party-help" role="status">
+        {value.length === 6
+          ? "6 digits entered. "
+          : `${value.length} of 6 digits entered. Enter all 6 digits to continue. `}
+        {creating
+          ? "A PIN is generated for you; you can change it. Share it in person, never in a public link."
+          : "Ask your host for the PIN. It joins the lobby; it cannot recover hosting."}
+      </p>
+      {copyStatus && !hidden && (
+        <p className="party-help" role="status">
+          {copyStatus}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -130,49 +331,83 @@ export function PartyEntry({
   disabled,
   busy,
   checking,
+  hideSecrets,
   onCreate,
   onJoin,
+  onRecover,
   onRefresh,
 }: {
   publicParty: PartyPublicInfo | null;
   disabled: boolean;
   busy: boolean;
   checking: boolean;
-  onCreate: (name: string, pin: string, settings: Settings) => Promise<void>;
-  onJoin: (name: string, pin: string) => Promise<void>;
+  hideSecrets: boolean;
+  onCreate: (name: string, pin: string, settings: Settings) => Promise<boolean>;
+  onJoin: (name: string, pin: string) => Promise<boolean>;
+  onRecover: (code: string) => Promise<boolean>;
   onRefresh: () => void;
 }) {
-  const [mode, setMode] = useState<"join" | "create">("join");
+  const [choice, setChoice] = useState<"join" | "create" | "recover" | null>(
+    null,
+  );
   const [name, setName] = useState("");
-  const [pin, setPin] = useState("");
-  const [settings, setSettings] = useState<Settings>(DEFAULT_PARTY_SETTINGS);
+  const [joinPin, setJoinPin] = useState("");
+  const [createPin, setCreatePin] = useState(generatePin);
+  const [recoveryCode, setRecoveryCode] = useState("");
+  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [validation, setValidation] = useState<string | null>(null);
-  const [choice, setChoice] = useState(false);
-  const creating =
-    (choice ? mode : publicParty?.exists === false ? "create" : "join") ===
-    "create";
+  const mode = choice ?? (publicParty?.exists === false ? "create" : "join");
+  const creating = mode === "create";
+  const recovering = mode === "recover";
+  const pin = creating ? createPin : joinPin;
   const activeMatch = !!publicParty?.exists && publicParty.phase !== "lobby";
-  const unavailable = creating
-    ? !!publicParty?.exists
-    : publicParty?.exists === false ||
-      activeMatch ||
-      (publicParty?.playerCount ?? 0) >= 12;
+  const unavailable = recovering
+    ? publicParty?.exists === false
+    : creating
+      ? !!publicParty?.exists
+      : publicParty?.exists === false ||
+        activeMatch ||
+        (publicParty?.playerCount ?? 0) >= 12;
+  const invalid = recovering
+    ? !normalizeRecoveryCode(recoveryCode)
+    : !name.trim() || name.trim().length > 24 || !/^[0-9]{6}$/.test(pin);
+  const disabledReason = unavailable
+    ? recovering
+      ? "There is no live party to recover."
+      : creating
+        ? "A party already exists. Join it, or ask its host to end it first."
+        : activeMatch
+          ? "A game is in progress. Ask the host for New game, same players to reopen the lobby."
+          : publicParty?.exists === false
+            ? "No party is live. Choose Be the host to create one."
+            : "The circle is full. Ask the host to make room."
+    : recovering
+      ? invalid
+        ? "Enter your full private recovery code: 8 groups of 4 characters (0–9 and A–F). Spaces and dashes are accepted. The joining PIN does not work here."
+        : "Ready to restore the original host’s seat."
+      : !name.trim()
+        ? "Enter your name and all 6 PIN digits to continue."
+        : pin.length !== 6
+          ? "Enter all 6 PIN digits to continue."
+          : "Ready when you are. Your name becomes a player only after you submit successfully.";
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (disabled || unavailable) return;
-    if (!name.trim() || name.trim().length > 24) {
-      setValidation("Choose a name between 1 and 24 characters.");
-      return;
-    }
-    if (!/^[0-9]{6}$/.test(pin)) {
-      setValidation("The party PIN must be exactly 6 digits.");
-      return;
-    }
+    if (disabled || unavailable || invalid) return;
     setValidation(null);
-    if (creating) await onCreate(name.trim(), pin, settings);
-    else await onJoin(name.trim(), pin);
-    setPin("");
+    const success = recovering
+      ? await onRecover(normalizeRecoveryCode(recoveryCode))
+      : creating
+        ? await onCreate(name.trim(), pin, settings)
+        : await onJoin(name.trim(), pin);
+    if (success) {
+      setJoinPin("");
+      setRecoveryCode("");
+    } else {
+      setValidation(
+        "You haven’t entered the party. Check the message above, correct your details, and try again.",
+      );
+    }
   }
 
   return (
@@ -222,38 +457,40 @@ export function PartyEntry({
           role="group"
           aria-label="Enter a party"
         >
-          <button
-            type="button"
-            aria-pressed={!creating}
-            disabled={busy}
-            onClick={() => {
-              setChoice(true);
-              setMode("join");
-              setValidation(null);
-            }}
-          >
-            Join the party
-          </button>
-          <button
-            type="button"
-            aria-pressed={creating}
-            disabled={busy}
-            onClick={() => {
-              setChoice(true);
-              setMode("create");
-              setValidation(null);
-            }}
-          >
-            Be the host
-          </button>
+          {(
+            [
+              ["join", "Join the party"],
+              ["create", "Be the host"],
+              ["recover", "Recover hosting"],
+            ] as const
+          ).map(([next, label]) => (
+            <button
+              key={next}
+              type="button"
+              aria-pressed={mode === next}
+              disabled={busy}
+              onClick={() => {
+                setChoice(next);
+                setValidation(null);
+              }}
+            >
+              {label}
+            </button>
+          ))}
         </div>
         <h2 id="party-entry-title">
-          {creating ? "Get the circle together." : "You’re on the guest list."}
+          {recovering
+            ? "Find your host seat."
+            : creating
+              ? "Get the circle together."
+              : "You’re on the guest list."}
         </h2>
         <p className="party-help">
-          {creating
-            ? "Choose your name and a private 6-digit PIN to share in person."
-            : "Ask your host for the PIN. Pick a name the room will recognize."}
+          {recovering
+            ? "Use the private recovery code you saved as host. This restores your original name, role, votes, and scores — no new player is added."
+            : creating
+              ? "Choose your name. We’ve generated a private 6-digit PIN for your group."
+              : "Ask your host for the PIN. Pick a name the room will recognize."}
         </p>
         <div className="party-availability" role="status">
           {checking
@@ -262,8 +499,8 @@ export function PartyEntry({
               ? "Party availability could not be checked. Refresh to try again."
               : publicParty.exists
                 ? activeMatch
-                  ? "A match is in progress. New players can join when the host returns to the lobby."
-                  : `${publicParty.playerCount ?? 0}/12 people in the lobby. ${creating ? "There’s already a party. Join it, or ask its host to end it first." : (publicParty.playerCount ?? 0) >= 12 ? "The circle is full. Ask the host to make room, then refresh." : "The circle is gathering."}`
+                  ? "A game is in progress. New players must wait for the lobby; the original host can still recover hosting."
+                  : `${publicParty.playerCount ?? 0}/12 people in the lobby.`
                 : "No party is live. Be the host and start one."}
           <button
             className="party-link"
@@ -279,79 +516,94 @@ export function PartyEntry({
             void submit(event);
           }}
         >
-          <label className="party-field" htmlFor="party-name">
-            Your name
-            <input
-              id="party-name"
-              placeholder={`e.g. ${SUGGESTED_PLAYER_NAMES[0]}`}
-              list="party-name-suggestions"
-              value={name}
-              autoComplete="nickname"
-              maxLength={24}
-              required
-              disabled={disabled}
-              onChange={(event) => setName(event.target.value)}
-            />
-          </label>
-          <datalist id="party-name-suggestions">
-            {SUGGESTED_PLAYER_NAMES.map((name) => (
-              <option key={name} value={name} />
-            ))}
-          </datalist>
-          <label className="party-field" htmlFor="party-pin">
-            {creating ? "Choose a party PIN" : "Party PIN"}
-            <input
-              id="party-pin"
-              className="party-pin-input"
-              value={pin}
-              type="password"
-              inputMode="numeric"
-              autoComplete="off"
-              pattern="[0-9]{6}"
-              minLength={6}
-              maxLength={6}
-              required
-              disabled={disabled}
-              aria-describedby="party-pin-help"
-              onChange={(event) =>
-                setPin(event.target.value.replace(/[^0-9]/g, ""))
-              }
-            />
-          </label>
-          <p id="party-pin-help" className="party-help">
-            Exactly 6 digits.{" "}
-            {creating
-              ? "Share it only with your group. You’ll be the host and a player."
-              : "No sign-up. Your role and vote stay private."}
-          </p>
-          {creating && (
-            <PartySettings
-              settings={settings}
-              disabled={disabled}
-              onChange={setSettings}
-            />
+          {recovering ? (
+            <>
+              <label className="party-field" htmlFor="party-recovery">
+                Private host recovery code
+                <input
+                  id="party-recovery"
+                  type="password"
+                  value={recoveryCode}
+                  autoComplete="off"
+                  spellCheck={false}
+                  autoCapitalize="characters"
+                  maxLength={64}
+                  required
+                  disabled={disabled}
+                  aria-describedby="party-recovery-help"
+                  onChange={(event) => setRecoveryCode(event.target.value)}
+                />
+              </label>
+              <p className="party-help" id="party-recovery-help">
+                Not the joining PIN. Recovery replaces the old host browser’s
+                access and rotates this code. Save the replacement privately
+                afterward. Never put recovery codes in a URL or share them with
+                players.
+              </p>
+            </>
+          ) : (
+            <>
+              <label className="party-field" htmlFor="party-name">
+                Your name
+                <input
+                  id="party-name"
+                  placeholder={`e.g. ${SUGGESTED_PLAYER_NAMES[0]}`}
+                  list="party-name-suggestions"
+                  value={name}
+                  autoComplete="nickname"
+                  maxLength={24}
+                  required
+                  disabled={disabled}
+                  onChange={(event) => setName(event.target.value)}
+                />
+              </label>
+              <datalist id="party-name-suggestions">
+                {SUGGESTED_PLAYER_NAMES.map((suggestion) => (
+                  <option key={suggestion} value={suggestion} />
+                ))}
+              </datalist>
+              <PartyPinField
+                key={mode}
+                value={pin}
+                onChange={creating ? setCreatePin : setJoinPin}
+                disabled={disabled}
+                creating={creating}
+                hidden={hideSecrets}
+              />
+              {creating && (
+                <PartySettings
+                  settings={settings}
+                  disabled={disabled}
+                  onChange={setSettings}
+                />
+              )}
+            </>
           )}
           {validation && (
             <p className="party-form-error" role="alert">
               {validation}
             </p>
           )}
+          <p className="party-help" role="status">
+            {disabledReason}
+          </p>
           <PrimaryButton
             type="submit"
-            disabled={
-              disabled || unavailable || !name.trim() || pin.length !== 6
-            }
+            disabled={disabled || unavailable || invalid}
           >
             {busy
-              ? "Getting you in…"
-              : creating
-                ? "Create the party"
-                : "Join the circle"}
+              ? "Connecting…"
+              : recovering
+                ? "Recover my host seat"
+                : creating
+                  ? "Create the party"
+                  : "Join the circle"}
           </PrimaryButton>
         </form>
         <p className="party-footnote">
           This browser saves a device token to restore your seat on refresh.
-          Don’t clear site storage. The PIN and token never go in the URL.
+          Don’t clear site storage. PINs, recovery codes, and tokens never go in
+          the URL.
         </p>
       </section>
     </div>
@@ -409,18 +661,12 @@ export function PartyLobby({
   safe,
   onAction,
   onRemove,
-}: RoundProps & { onRemove: (player: PartyPlayer) => void }) {
+  hideSecrets,
+}: RoundProps & {
+  onRemove: (player: PartyPlayer) => void;
+  hideSecrets: boolean;
+}) {
   const host = snapshot.selfId === snapshot.hostId;
-  const [showPin, setShowPin] = useState(false);
-  useEffect(() => {
-    const hide = () => setShowPin(false);
-    window.addEventListener("blur", hide);
-    document.addEventListener("visibilitychange", hide);
-    return () => {
-      window.removeEventListener("blur", hide);
-      document.removeEventListener("visibilitychange", hide);
-    };
-  }, []);
   const everyoneConnected = snapshot.players.every(
     (player) => player.connected,
   );
@@ -438,25 +684,22 @@ export function PartyLobby({
             ? "You’re hosting — and you’re playing. Ask everyone to open Ko Ho?, choose Own phones, and join with their name and your PIN."
             : "You’re in. Keep your own phone nearby while the host gathers the circle and picks the settings."}
         </p>
-        {host && snapshot.pin && (
-          <div className="party-invite">
-            <div>
-              <span className="eyebrow">YOUR PARTY PIN</span>
-              <strong className="party-pin-display">
-                {showPin ? snapshot.pin : "••••••"}
-              </strong>
-            </div>
-            <button
-              type="button"
-              className="party-button"
-              aria-pressed={showPin}
-              onClick={() => setShowPin(!showPin)}
-            >
-              {showPin ? <EyeOff size={16} /> : <Eye size={16} />}
-              {showPin ? "Hide PIN" : "Show PIN"}
-            </button>
-            <p>Share in person, not in a public link.</p>
-          </div>
+        {host && (
+          <>
+            {snapshot.pin && (
+              <div className="party-invite">
+                <PartySecret
+                  key={`${snapshot.gameId}:${snapshot.selfId}`}
+                  label="Party PIN"
+                  value={snapshot.pin}
+                  help="Share in person, not in a public link. Save your private recovery code from Manage party too."
+                  disabled={!safe}
+                  hidden={hideSecrets}
+                />
+              </div>
+            )}
+            <InviteLink />
+          </>
         )}
         <div className="party-section-heading">
           <h2>The guest list</h2>
@@ -662,14 +905,20 @@ export function PartyReady({
 }
 
 export function PartyClues({ snapshot, safe, onAction }: RoundProps) {
-  const currentId = snapshot.clueOrder[snapshot.clueIndex];
+  const cycleIndex = snapshot.clueIndex % snapshot.clueOrder.length;
+  const currentId = snapshot.clueOrder[cycleIndex];
   const current = snapshot.players.find((player) => player.id === currentId);
   const myTurn = currentId === snapshot.selfId;
   const mayAdvance = myTurn || snapshot.hostId === snapshot.selfId;
+  const lastTurn =
+    snapshot.clueIndex ===
+    snapshot.clueOrder.length * snapshot.settings.clueCycles - 1;
+  const lastInCycle = cycleIndex === snapshot.clueOrder.length - 1;
   return (
     <>
       <span className="eyebrow muted">
-        CLUE {snapshot.clueIndex + 1} OF {snapshot.clueOrder.length}
+        CYCLE {snapshot.clueCycle} OF {snapshot.settings.clueCycles} · CLUE{" "}
+        {cycleIndex + 1} OF {snapshot.clueOrder.length}
       </span>
       <div className="party-turn-icon">
         <UserRound size={34} />
@@ -679,24 +928,35 @@ export function PartyClues({ snapshot, safe, onAction }: RoundProps) {
       </h1>
       <p className="party-copy">
         {myTurn
-          ? "Say one short clue out loud. Don’t say or translate the secret word. Imposter? Act like you belong."
+          ? snapshot.clueCycle === 2
+            ? "One more clue, in the same order. Say something new out loud — never the secret word or its translation."
+            : "Say one short clue out loud. Don’t say or translate the secret word. Imposter? Act like you belong."
           : "Listen to the clue. A little too vague? A little too confident? Remember it for the discussion."}
       </p>
-      <ol className="party-clue-order" aria-label="Shuffled clue order">
+      {snapshot.settings.clueCycles === 2 && (
+        <p className="party-help">
+          Two clue cycles are on. Everyone speaks twice in the same shuffled
+          order, then discussion begins.
+        </p>
+      )}
+      <ol
+        className="party-clue-order"
+        aria-label={`Clue order, cycle ${snapshot.clueCycle}`}
+      >
         {snapshot.clueOrder.map((id, index) => (
           <li
             key={id}
             className={
-              index === snapshot.clueIndex
+              index === cycleIndex
                 ? "is-current"
-                : index < snapshot.clueIndex
+                : index < cycleIndex
                   ? "is-done"
                   : ""
             }
-            aria-current={index === snapshot.clueIndex ? "step" : undefined}
+            aria-current={index === cycleIndex ? "step" : undefined}
           >
             <span>
-              {index < snapshot.clueIndex ? (
+              {index < cycleIndex ? (
                 <Check size={15} />
               ) : (
                 String(index + 1).padStart(2, "0")
@@ -707,9 +967,9 @@ export function PartyClues({ snapshot, safe, onAction }: RoundProps) {
               {id === snapshot.selfId ? " (you)" : ""}
             </strong>
             <small>
-              {index < snapshot.clueIndex
-                ? "Done"
-                : index === snapshot.clueIndex
+              {index < cycleIndex
+                ? "Done this cycle"
+                : index === cycleIndex
                   ? "Speaking"
                   : "Up next"}
             </small>
@@ -727,9 +987,11 @@ export function PartyClues({ snapshot, safe, onAction }: RoundProps) {
             })
           }
         >
-          {snapshot.clueIndex === snapshot.clueOrder.length - 1
+          {lastTurn
             ? "Clue given — start discussion"
-            : "Clue given — next person"}
+            : lastInCycle
+              ? "Clue given — start cycle 2"
+              : "Clue given — next person"}
         </PrimaryButton>
       ) : (
         <p className="party-wait" role="status">
@@ -744,34 +1006,37 @@ export function PartyClues({ snapshot, safe, onAction }: RoundProps) {
   );
 }
 
-function useDiscussionTime(snapshot: PartySnapshot) {
-  const [clock, setClock] = useState({
-    serverNow: snapshot.serverNow,
-    elapsed: 0,
-  });
+function usePartyCountdown(
+  serverNow: number,
+  deadline: number | null,
+  remainingMs = 0,
+) {
+  const [clock, setClock] = useState({ serverNow, elapsed: 0 });
   useEffect(() => {
     const started = performance.now();
-    setClock({ serverNow: snapshot.serverNow, elapsed: 0 });
+    setClock({ serverNow, elapsed: 0 });
     const timer = window.setInterval(
       () =>
         setClock({
-          serverNow: snapshot.serverNow,
+          serverNow,
           elapsed: performance.now() - started,
         }),
       200,
     );
     return () => window.clearInterval(timer);
-  }, [snapshot.serverNow, snapshot.discussion.deadline]);
-  const elapsed = clock.serverNow === snapshot.serverNow ? clock.elapsed : 0;
+  }, [serverNow, deadline]);
+  const elapsed = clock.serverNow === serverNow ? clock.elapsed : 0;
   const remaining =
-    snapshot.discussion.deadline === null
-      ? snapshot.discussion.remainingMs
-      : snapshot.discussion.deadline - snapshot.serverNow - elapsed;
+    deadline === null ? remainingMs : deadline - serverNow - elapsed;
   return Math.max(0, Math.ceil(remaining / 1000));
 }
 
 export function PartyDiscussion({ snapshot, safe, onAction }: RoundProps) {
-  const seconds = useDiscussionTime(snapshot);
+  const seconds = usePartyCountdown(
+    snapshot.serverNow,
+    snapshot.discussion.deadline,
+    snapshot.discussion.remainingMs,
+  );
   const host = snapshot.selfId === snapshot.hostId;
   const paused = snapshot.discussion.deadline === null;
   return (
@@ -937,6 +1202,109 @@ export function PartyVote({ snapshot, safe, onAction }: RoundProps) {
   );
 }
 
+export function PartyGuess({
+  snapshot,
+  safe,
+  onAction,
+  onSkip,
+}: RoundProps & { onSkip: () => void }) {
+  const [answer, setAnswer] = useState("");
+  const seconds = usePartyCountdown(
+    snapshot.serverNow,
+    snapshot.guess?.deadline ?? null,
+  );
+  const guessing = snapshot.guess?.playerId === snapshot.selfId;
+  const host = snapshot.selfId === snapshot.hostId;
+  const imposter = snapshot.players.find(
+    (player) => player.id === snapshot.guess?.playerId,
+  );
+  return (
+    <>
+      <span className="eyebrow muted">CAUGHT — ONE LAST CHANCE</span>
+      <h1>
+        {guessing
+          ? "Can you name the word?"
+          : `${imposter?.name ?? "The imposter"} has one last guess.`}
+      </h1>
+      <p className="party-copy">
+        {guessing
+          ? "The circle caught you. Submit one answer before time runs out. A correct guess earns you 2 points instead; a wrong answer or no answer gives everyone else 1 point."
+          : "Keep the word to yourself — don’t say it out loud or show your screen. No points are awarded until this chance ends."}
+      </p>
+      <div
+        className={`party-timer ${seconds === 0 ? "is-finished" : ""}`}
+        role="timer"
+        aria-label={`${seconds} seconds to guess`}
+      >
+        <strong>0:{String(seconds).padStart(2, "0")}</strong>
+        <span>
+          {seconds === 0
+            ? "TIME’S UP — WAITING FOR THE SERVER RESULT"
+            : "ONE ANSWER · 30 SECONDS"}
+        </span>
+      </div>
+      {!safe && (
+        <p className="party-help">
+          Last synced countdown. Reconnect to submit or see the current result.
+          The server deadline still applies.
+        </p>
+      )}
+      {guessing ? (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (safe && seconds > 0 && answer.trim())
+              onAction({
+                type: "guess-word",
+                roundNumber: snapshot.roundNumber,
+                guess: answer.trim(),
+              });
+          }}
+        >
+          <label className="party-field" htmlFor="party-last-guess">
+            Your one guess
+            <input
+              id="party-last-guess"
+              value={answer}
+              maxLength={80}
+              required
+              autoComplete="off"
+              spellCheck={false}
+              disabled={!safe || seconds === 0}
+              onChange={(event) => setAnswer(event.target.value)}
+            />
+          </label>
+          <p className="party-help">
+            English or Nepali is accepted. Use the whole word or phrase. You
+            cannot change a submitted answer.
+          </p>
+          <PrimaryButton
+            type="submit"
+            disabled={!safe || seconds === 0 || !answer.trim()}
+          >
+            Submit my one guess
+          </PrimaryButton>
+        </form>
+      ) : (
+        <p className="party-wait" role="status">
+          Waiting for the imposter’s private answer or the deadline. The secret
+          word stays hidden until the result.
+        </p>
+      )}
+      {host && (
+        <button
+          type="button"
+          className="party-link"
+          disabled={!safe || seconds === 0}
+          onClick={onSkip}
+        >
+          End the last chance without a guess…
+        </button>
+      )}
+    </>
+  );
+}
+
 export function PartyResult({ snapshot, safe, onAction }: RoundProps) {
   const result = snapshot.result;
   if (!result)
@@ -966,16 +1334,26 @@ export function PartyResult({ snapshot, safe, onAction }: RoundProps) {
         )}
       </div>
       <h1>
-        {outcome.caught ? "Caught in the act." : "The imposter got away."}
+        {outcome.guessResult === "correct"
+          ? "Caught — but guessed it."
+          : outcome.caught
+            ? "Caught in the act."
+            : "The imposter got away."}
       </h1>
       <p className="party-copy">
         <strong>{imposter?.name}</strong> was the imposter.
         <br />
-        {outcome.tied
-          ? "The vote was tied. No one was accused."
-          : outcome.caught
-            ? "The circle saw right through the bluff."
-            : `The circle accused ${accused?.name} instead.`}
+        {outcome.guessResult === "correct"
+          ? "The circle accused the imposter correctly, but their last-chance guess named the secret word."
+          : outcome.guessResult === "incorrect"
+            ? "The circle caught the imposter. Their last-chance guess was incorrect."
+            : outcome.guessResult === "skipped"
+              ? "The circle caught the imposter. The last chance ended without a correct guess."
+              : outcome.tied
+                ? "The vote was tied. No one was accused."
+                : outcome.caught
+                  ? "The circle saw right through the bluff."
+                  : `The circle accused ${accused?.name} instead.`}
       </p>
       <div className="party-word-recap">
         <span className="eyebrow">THE SECRET WORD WAS</span>
@@ -1001,9 +1379,11 @@ export function PartyResult({ snapshot, safe, onAction }: RoundProps) {
         ))}
       </section>
       <p className="party-award">
-        {outcome.caught
-          ? "Good instincts. +1 point to everyone except the imposter."
-          : `A successful bluff. +2 points to ${imposter?.name}.`}
+        {outcome.guessResult === "correct"
+          ? `A successful last guess. +2 points to ${imposter?.name}; no points to the other players.`
+          : outcome.caught
+            ? "Good instincts. +1 point to everyone except the imposter."
+            : `A successful escape. +2 points to ${imposter?.name}.`}
       </p>
       <h2 className="party-subheading">The standings</h2>
       <Scoreboard players={snapshot.players} awards={outcome.awards} />
@@ -1029,7 +1409,7 @@ export function PartyResult({ snapshot, safe, onAction }: RoundProps) {
   );
 }
 
-export function PartyFinal({ snapshot, safe, onAction }: RoundProps) {
+export function PartyFinal({ snapshot }: { snapshot: PartySnapshot }) {
   const ranked = rankPlayers(snapshot.players);
   const winners = ranked.filter((player) => player.score === ranked[0]?.score);
   const host = snapshot.selfId === snapshot.hostId;
@@ -1053,23 +1433,11 @@ export function PartyFinal({ snapshot, safe, onAction }: RoundProps) {
         Good bluffs. Better company. <span lang="ne">फेरि खेलौँ?</span>
       </p>
       <Scoreboard players={snapshot.players} final />
-      {host ? (
-        <>
-          <PrimaryButton
-            disabled={!safe}
-            onClick={() => onAction({ type: "back-to-lobby" })}
-          >
-            One more game — back to lobby
-          </PrimaryButton>
-          <p className="party-footnote">
-            Same circle and PIN. Fresh scores, roles, and word history.
-          </p>
-        </>
-      ) : (
-        <p className="party-wait" role="status">
-          The host can bring everyone back to the lobby for a fresh game.
-        </p>
-      )}
+      <p className="party-wait" role="status">
+        {host
+          ? "Ready for another game? Open Manage party above, then choose New game, same players. Nothing restarts until you confirm."
+          : "The host can choose New game, same players to reopen the lobby. Your final standings stay here until then."}
+      </p>
     </>
   );
 }
@@ -1113,8 +1481,9 @@ export function PartyRules() {
             <p>
               Follow the shuffled speaking order. Say one short clue out loud —
               never the word or its translation. The speaker or host moves to
-              the next turn. Then discuss out loud with the shared timer; the
-              host can pause it and starts the vote.
+              the next turn. With two clue cycles enabled, repeat the same order
+              once with new clues. Then discuss with the shared timer; the host
+              can pause it and starts the vote.
             </p>
           </div>
         </li>
@@ -1124,9 +1493,10 @@ export function PartyRules() {
             <strong>Vote on your own phone</strong>
             <p>
               Pick a suspect, then lock your private vote. No self-votes, no
-              take-backs. The reveal happens only when everyone has voted. The
-              unique highest vote count decides the accusation; a tie lets the
-              imposter escape.
+              take-backs. The unique highest vote count decides the accusation;
+              a tie lets the imposter escape. With last-chance guessing enabled,
+              a caught imposter gets one private answer in 30 seconds before the
+              secret word or scores are revealed. The host may end that chance.
             </p>
           </div>
         </li>
@@ -1136,8 +1506,10 @@ export function PartyRules() {
             <strong>Reveal. Score. Repeat.</strong>
             <p>
               Catch the imposter: everyone else gets 1 point. A wrong accusation
-              or tie: the imposter gets 2. The host leads the next round.
-              Highest total wins; shared wins count.
+              or tie: the imposter gets 2. A correct last-chance guess also
+              earns the imposter 2 instead of awarding the other players; an
+              incorrect or skipped guess leaves the imposter caught. The host
+              leads the next round. Highest total wins; shared wins count.
             </p>
           </div>
         </li>
@@ -1145,12 +1517,17 @@ export function PartyRules() {
       <div className="notice">
         <ShieldCheck size={19} />
         <p>
-          Cloudflare keeps names, settings, roles, votes, scores, and game
-          progress for this party. Roles and individual ballots are private; the
-          result shows vote totals, not who voted for whom. If someone loses
-          connection, wait for them to reconnect. If they’re gone for good, the
-          host can reset to the lobby and remove them. Ending the party clears
-          it; it also expires after 12 hours without a game action.
+          Cloudflare keeps this party’s names, settings, private roles and
+          ballots, scores, and progress. Results show vote totals, not
+          individual ballots. Keep this browser’s saved data to reconnect. Hosts
+          can privately save a recovery code from Manage party, transfer hosting
+          to a connected player, or start a confirmed New game, same players to
+          reopen the lobby and remove missing players. Starting a fresh party
+          invalidates all old seats; everyone else must rejoin with the new PIN.
+          Ending or expiring the party clears personal state. A party expires
+          after 12 hours without a game action, or after 15 continuous minutes
+          with everyone disconnected. Non-personal recent-word history is
+          retained to reduce repeats.
         </p>
       </div>
     </div>

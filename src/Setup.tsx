@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
   ArrowUpRight,
+  BookOpen,
   Check,
   CookingPot,
   Globe2,
@@ -15,10 +16,11 @@ import {
 } from "lucide-react";
 import { PACKS } from "./data";
 import type { PackId } from "./data";
-import { validateSetup } from "./game";
+import { DEFAULT_SETTINGS, migrateSettings, validateSetup } from "./game";
 import type { Settings } from "./game";
 import { Eyes, PrimaryButton } from "./components";
 import { SUGGESTED_PLAYER_NAMES } from "./playerNames";
+import { GameOptions } from "./GameOptions";
 
 export interface Preferences {
   names: string[];
@@ -26,11 +28,7 @@ export interface Preferences {
 }
 const DEFAULTS: Preferences = {
   names: SUGGESTED_PLAYER_NAMES.slice(0, 4),
-  settings: {
-    packIds: ["everyday", "culture", "diaspora", "classic"],
-    rounds: 5,
-    discussionSeconds: 60,
-  },
+  settings: { ...DEFAULT_SETTINGS, packIds: [...DEFAULT_SETTINGS.packIds] },
 };
 const STORAGE_KEY = "ko-ho-setup-v1";
 
@@ -39,25 +37,16 @@ export function loadPreferences(): Preferences {
     const raw: unknown = JSON.parse(
       localStorage.getItem(STORAGE_KEY) ?? "null",
     );
-    if (
-      !raw ||
-      typeof raw !== "object" ||
-      !("names" in raw) ||
-      !("settings" in raw)
-    )
-      return DEFAULTS;
-    const { names, settings } = raw;
-    if (
-      !Array.isArray(names) ||
-      !names.every((name) => typeof name === "string") ||
-      !settings ||
-      typeof settings !== "object"
-    )
-      return DEFAULTS;
-    const value = settings as Settings;
-    if (!Array.isArray(value.packIds) || validateSetup(names, value))
-      return DEFAULTS;
-    return { names, settings: value };
+    if (!raw || typeof raw !== "object") return DEFAULTS;
+    const saved = raw as Record<string, unknown>;
+    const settings = migrateSettings(saved.settings) ?? DEFAULTS.settings;
+    const names =
+      Array.isArray(saved.names) &&
+      saved.names.every((name): name is string => typeof name === "string") &&
+      !validateSetup(saved.names, DEFAULTS.settings)
+        ? saved.names.map((name) => name.trim())
+        : DEFAULTS.names;
+    return { names, settings };
   } catch {
     return DEFAULTS;
   }
@@ -76,6 +65,7 @@ const packIcons = {
   culture: Mountain,
   diaspora: Globe2,
   classic: Sparkles,
+  easy: BookOpen,
 };
 
 export default function Setup({
@@ -346,6 +336,7 @@ export default function Setup({
               1 imposter. A whole room of suspects.
             </div>
           </fieldset>
+          <GameOptions settings={settings} onChange={setSettings} />
           {error && (
             <p className="form-error" role="alert">
               {error}

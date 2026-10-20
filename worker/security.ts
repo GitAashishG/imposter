@@ -40,7 +40,7 @@ export class SerialQueue {
   }
 }
 
-export interface PinAttempt {
+export interface FailureAttempt {
   key: string;
   startedAt: number;
   count: number;
@@ -51,7 +51,7 @@ const MAX_PIN_BUCKETS = 256;
 
 /** Persisted, bounded failure buckets. Correct joins do not consume an attempt. */
 export function checkPinThrottle(
-  attempts: PinAttempt[],
+  attempts: FailureAttempt[],
   key: string,
   now: number,
 ): void {
@@ -73,14 +73,14 @@ export function checkPinThrottle(
   }
 }
 
-export function recordWrongPin(
-  attempts: PinAttempt[],
+export function recordFailure(
+  attempts: FailureAttempt[],
   key: string,
   now: number,
-): PinAttempt[] {
-  const active = attempts.filter(
-    (attempt) => now - attempt.startedAt < PIN_WINDOW_MS,
-  );
+): FailureAttempt[] {
+  const active = attempts
+    .filter((attempt) => now - attempt.startedAt < PIN_WINDOW_MS)
+    .map((attempt) => ({ ...attempt }));
   for (const bucketKey of [key, "global"]) {
     const existing = active.find((attempt) => attempt.key === bucketKey);
     if (existing) existing.count += 1;
@@ -91,4 +91,26 @@ export function recordWrongPin(
     active.splice(index, 1);
   }
   return active;
+}
+
+/** Recovery has a separate persisted bucket; joining attempts never consume it. */
+export function checkRecoveryThrottle(
+  attempts: FailureAttempt[],
+  key: string,
+  now: number,
+): void {
+  if (
+    attempts.some(
+      (attempt) =>
+        now - attempt.startedAt < PIN_WINDOW_MS &&
+        ((attempt.key === key && attempt.count >= 10) ||
+          (attempt.key === "global" && attempt.count >= 60)),
+    )
+  ) {
+    throw new PartyError(
+      "RECOVERY_THROTTLED",
+      "Too many incorrect recovery codes. Please wait up to ten minutes and try again.",
+      429,
+    );
+  }
 }

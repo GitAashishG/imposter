@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { PartyAction } from "../src/party/protocol";
+import type { PartyCommand } from "../src/party/protocol";
 import type { Settings } from "../src/game";
 import {
   PARTY_TTL_MS,
@@ -10,6 +10,8 @@ import {
   joinParty,
   project,
   publicInfo,
+  updatePresence,
+  updateWordHistory,
   validateAction,
   validateSettings,
   type PartyState,
@@ -20,18 +22,21 @@ import {
   checkPinThrottle,
   hashToken,
   makeToken,
-  recordWrongPin,
-  type PinAttempt,
+  recordFailure,
+  type FailureAttempt,
 } from "./security";
 
 const settings: Settings = {
   packIds: ["everyday"],
   rounds: 3,
   discussionSeconds: 60,
+  clueCycles: 1,
+  lastChanceGuess: false,
 };
 const ids = ["host", "b", "c", "d"];
 const online = new Set(ids);
 const zero = () => 0;
+const histories = new WeakMap<PartyState, string[]>();
 
 function lobby(count = 4): PartyState {
   let state = createParty(
@@ -50,17 +55,27 @@ function lobby(count = 4): PartyState {
       1_000,
     );
   }
-  return state;
+  return updatePresence(state, online, 1_000);
 }
 
 function act(
   state: PartyState,
-  action: PartyAction,
+  action: PartyCommand,
   actor = "host",
   now = 2_000,
 ): PartyState {
-  const next = applyAction(state, actor, action, now, online, zero);
+  const history = histories.get(state) ?? [];
+  const next = applyAction(
+    state,
+    actor,
+    { ...action, gameId: state.gameId },
+    now,
+    online,
+    zero,
+    { recentWordIds: history },
+  );
   if (!next) throw new Error("This helper expects a surviving party.");
+  histories.set(next, updateWordHistory(state, next, history));
   return next;
 }
 
@@ -219,16 +234,21 @@ describe("admission and identity", () => {
     rejects("UNKNOWN_ACTION", () => validateAction({ type: "__proto__" }));
     rejects("UNKNOWN_ACTION", () => validateAction({ type: "resolve" }));
     rejects("INVALID_BODY", () =>
-      validateAction({ type: "start", playerId: "host" }),
+      validateAction({ type: "start", gameId: "game", playerId: "host" }),
     );
     rejects("INVALID_ACTION", () =>
-      validateAction({ type: "vote", suspectId: "b" }),
+      validateAction({ type: "vote", gameId: "game", suspectId: "b" }),
     );
     rejects("INVALID_ACTION", () =>
-      validateAction({ type: "next-clue", roundNumber: 1, clueIndex: -1 }),
+      validateAction({
+        type: "next-clue",
+        gameId: "game",
+        roundNumber: 1,
+        clueIndex: -1,
+      }),
     );
     rejects("INVALID_ACTION", () =>
-      validateAction({ type: "ready", roundNumber: "1" }),
+      validateAction({ type: "ready", gameId: "game", roundNumber: "1" }),
     );
   });
 
@@ -266,7 +286,13 @@ describe("admission and identity", () => {
     const left = act(state, { type: "leave" }, "b");
     rejects("SESSION_ENDED", () => authenticate(left, "hash-b", 2_000));
     expect(
-      applyAction(state, "host", { type: "end-party" }, 2_000, online),
+      applyAction(
+        state,
+        "host",
+        { type: "end-party", gameId: state.gameId },
+        2_000,
+        online,
+      ),
     ).toBeNull();
     rejects("SESSION_ENDED", () => authenticate(null, "hash-host", 2_000));
     const fresh = createParty(
@@ -287,7 +313,7 @@ describe("admission and identity", () => {
 
 describe("permissions and phase guards", () => {
   test("only the host controls setup, match flow, removal and ending", () => {
-    const cases: Array<[PartyState, PartyAction]> = [
+    const cases: Array<[PartyState, PartyCommand]> = [
       [lobby(), { type: "settings", settings }],
       [lobby(), { type: "start" }],
       [roles(), { type: "start-clues", roundNumber: 1 }],
@@ -295,7 +321,7 @@ describe("permissions and phase guards", () => {
       [discussion(), { type: "resume-timer", roundNumber: 1 }],
       [discussion(), { type: "start-vote", roundNumber: 1 }],
       [caught(), { type: "next-round", roundNumber: 1 }],
-      [roles(), { type: "back-to-lobby" }],
+      [roles(), { type: "new-game" }],
       [lobby(), { type: "remove-player", playerId: "c" }],
       [lobby(), { type: "end-party" }],
     ];
@@ -310,11 +336,12 @@ describe("permissions and phase guards", () => {
 
   test("start requires 3–12 connected players; readiness is per-player and idempotent", () => {
     rejects("INVALID_SETUP", () => act(lobby(2), { type: "start" }));
+    const waiting = lobby();
     rejects("PLAYERS_OFFLINE", () =>
       applyAction(
-        lobby(),
+        waiting,
         "host",
-        { type: "start" },
+        { type: "start", gameId: waiting.gameId },
         2_000,
         new Set(["host", "b", "c"]),
         zero,
@@ -380,7 +407,14 @@ describe("permissions and phase guards", () => {
       { type: "next-round", roundNumber: 1 },
     ])
       rejects("STALE_ROUND", () =>
-        applyAction(next, "host", action, 9_000, online, zero),
+        applyAction(
+          next,
+          "host",
+          { ...action, gameId: next.gameId },
+          9_000,
+          online,
+          zero,
+        ),
       );
     expect(JSON.stringify(next)).toBe(before);
     rejects("WRONG_PHASE", () => act(roles(), { type: "start" }));
@@ -489,6 +523,7 @@ describe("private projection and presence", () => {
       exists: true,
       phase: "role",
       playerCount: 4,
+      abandonedExpiresAt: null,
     });
   });
 });
@@ -656,19 +691,19 @@ describe("voting, scoring and match lifecycle", () => {
     rejects("WRONG_PHASE", () =>
       act(state, { type: "next-round", roundNumber: 3 }, "host", 9_000),
     );
-    const reset = act(state, { type: "back-to-lobby" }, "host", 10_000);
+    const reset = act(state, { type: "new-game" }, "host", 10_000);
     expect(reset.players.map((player) => player.id)).toEqual(ids);
     expect(reset.players.every((player) => player.score === 0)).toBe(true);
     expect(reset.round).toBeNull();
-    expect(reset.usedWordIds).toEqual([]);
+    expect(histories.get(reset)).toEqual([...words]);
     const restarted = act(reset, { type: "start" }, "host", 11_000);
     expect(restarted.round!.number).toBe(1);
-    expect(restarted.round!.word.id).toBe([...words][0]!);
+    expect(words.has(restarted.round!.word.id)).toBe(false);
   });
 
   test("host can abort from every active phase and retain roster/session identities", () => {
     for (const state of [roles(), clues(), discussion(), voting(), caught()]) {
-      const reset = act(state, { type: "back-to-lobby" }, "host", 9_000);
+      const reset = act(state, { type: "new-game" }, "host", 9_000);
       expect(reset.phase).toBe("lobby");
       expect(reset.round).toBeNull();
       expect(reset.outcome).toBeNull();
@@ -716,10 +751,10 @@ describe("mutation serialization and bounded PIN throttling", () => {
   });
 
   test("allows household mistakes but throttles guessing, expires windows and bounds storage", () => {
-    let attempts: PinAttempt[] = [];
+    let attempts: FailureAttempt[] = [];
     for (let index = 0; index < 20; index += 1) {
       checkPinThrottle(attempts, "shared-household", 1_000);
-      attempts = recordWrongPin(attempts, "shared-household", 1_000);
+      attempts = recordFailure(attempts, "shared-household", 1_000);
     }
     rejects("PIN_THROTTLED", () =>
       checkPinThrottle(attempts, "shared-household", 1_001),
@@ -730,7 +765,7 @@ describe("mutation serialization and bounded PIN throttling", () => {
     expect(() =>
       checkPinThrottle(attempts, "shared-household", 1_000 + PIN_WINDOW_MS),
     ).not.toThrow();
-    attempts = recordWrongPin(
+    attempts = recordFailure(
       attempts,
       "shared-household",
       1_000 + PIN_WINDOW_MS,
@@ -739,7 +774,7 @@ describe("mutation serialization and bounded PIN throttling", () => {
       attempts.find((attempt) => attempt.key === "shared-household")!.count,
     ).toBe(1);
     for (let index = 0; index < 300; index += 1)
-      attempts = recordWrongPin(
+      attempts = recordFailure(
         attempts,
         `different-${index}`,
         1_000 + PIN_WINDOW_MS,

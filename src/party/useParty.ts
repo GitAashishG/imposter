@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Settings } from "../game";
 import type {
   PartyAction,
+  PartyActionResponse,
   PartyEntry,
   PartyErrorBody,
   PartyEvent,
@@ -47,10 +48,17 @@ function readSession(): PartySession | null {
   }
 }
 
-function storeSession(session: PartySession | null): boolean {
+function storeSession(
+  session: PartySession | null,
+  retiringToken: string | undefined,
+): boolean {
   try {
     if (session) localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-    else localStorage.removeItem(SESSION_KEY);
+    else if (retiringToken && readSession()?.token === retiringToken) {
+      // Another tab may already have saved a fresh-party or recovered seat.
+      // Only retire the credential this tab actually owned.
+      localStorage.removeItem(SESSION_KEY);
+    }
     return true;
   } catch {
     return false;
@@ -115,12 +123,15 @@ export interface PartyClient {
   status: "checking" | "idle" | "connecting" | "online" | "offline";
   busy: boolean;
   error: string | null;
-  create(name: string, pin: string, settings: Settings): Promise<void>;
-  join(name: string, pin: string): Promise<void>;
-  act(action: PartyAction): Promise<void>;
+  notice: string | null;
+  create(name: string, pin: string, settings: Settings): Promise<boolean>;
+  join(name: string, pin: string): Promise<boolean>;
+  recover(recoveryCode: string): Promise<boolean>;
+  act(action: PartyAction): Promise<boolean>;
   reconnect(): void;
   forget(): void;
   clearError(): void;
+  clearNotice(): void;
   refreshParty(): Promise<void>;
 }
 
@@ -136,13 +147,15 @@ export function useParty(): PartyClient {
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [connectionAttempt, setConnectionAttempt] = useState(0);
   const socketRef = useRef<WebSocket | null>(null);
 
   const replaceSession = useCallback((next: PartySession | null) => {
+    const retiringToken = sessionRef.current?.token;
     sessionRef.current = next;
     setSession(next);
-    if (!storeSession(next) && next) {
+    if (!storeSession(next, retiringToken) && next) {
       setError(
         "Your browser can’t save this player session. Keep this tab open to avoid losing your seat.",
       );
@@ -216,7 +229,13 @@ export function useParty(): PartyClient {
           socket.send(JSON.stringify({ type: "auth", token: expected.token }));
       };
       socket.onmessage = (event) => {
-        if (disposed || socket !== current || event.data === "pong") return;
+        if (
+          disposed ||
+          socket !== current ||
+          event.data === "pong" ||
+          sessionRef.current?.token !== expected.token
+        )
+          return;
         let message: PartyEvent;
         try {
           message = JSON.parse(String(event.data)) as PartyEvent;
@@ -235,8 +254,15 @@ export function useParty(): PartyClient {
           message.type === "ended" ||
           (message.type === "error" && message.code === "SESSION_ENDED")
         ) {
+          if (
+            message.type === "ended" &&
+            message.partyId &&
+            message.partyId !== expected.partyId
+          )
+            return;
           terminated = true;
-          setError(message.type === "ended" ? message.message : message.error);
+          setError(null);
+          setNotice(message.type === "ended" ? message.message : message.error);
           replaceSession(null);
           setSnapshot(null);
           setStatus("idle");
@@ -246,10 +272,17 @@ export function useParty(): PartyClient {
         }
       };
       socket.onerror = () => {
-        if (!disposed) setError(NETWORK_ERROR);
+        if (!disposed && sessionRef.current?.token === expected.token)
+          setError(NETWORK_ERROR);
       };
       socket.onclose = () => {
-        if (disposed || terminated || socket !== current) return;
+        if (
+          disposed ||
+          terminated ||
+          socket !== current ||
+          sessionRef.current?.token !== expected.token
+        )
+          return;
         setStatus("offline");
         setError(NETWORK_ERROR);
         attempt += 1;
@@ -337,14 +370,19 @@ export function useParty(): PartyClient {
     setSnapshot(null);
     setStatus("idle");
     setError(null);
+    setNotice(null);
   }, [replaceSession]);
 
   const enter = useCallback(
-    async (path: "/create" | "/join", body: object) => {
-      if (!API || busyRef.current) return;
+    async (
+      path: "/create" | "/join" | "/recover",
+      body: object,
+    ): Promise<boolean> => {
+      if (!API || busyRef.current) return false;
       busyRef.current = true;
       setBusy(true);
       setError(null);
+      setNotice(null);
       try {
         const entry = await request<PartyEntry>(path, {
           method: "POST",
@@ -356,13 +394,16 @@ export function useParty(): PartyClient {
           exists: true,
           phase: entry.snapshot.phase,
           playerCount: entry.snapshot.players.length,
+          abandonedExpiresAt: entry.snapshot.abandonedExpiresAt,
         });
         setStatus("connecting");
+        return true;
       } catch (cause) {
         setError(
           cause instanceof Error ? cause.message : "Could not enter the party.",
         );
         void refreshParty();
+        return false;
       } finally {
         busyRef.current = false;
         setBusy(false);
@@ -372,19 +413,20 @@ export function useParty(): PartyClient {
   );
 
   const act = useCallback(
-    async (action: PartyAction) => {
+    async (action: PartyAction): Promise<boolean> => {
       const actor = sessionRef.current;
       if (
         !actor ||
         busyRef.current ||
         socketRef.current?.readyState !== WebSocket.OPEN
       )
-        return;
+        return false;
       busyRef.current = true;
       setBusy(true);
       setError(null);
+      setNotice(null);
       try {
-        const next = await request<PartySnapshot | null>(
+        const next = await request<PartyActionResponse>(
           "/action",
           {
             method: "POST",
@@ -392,15 +434,31 @@ export function useParty(): PartyClient {
           },
           actor.token,
         );
-        if (sessionRef.current?.token !== actor.token) return;
-        if (next) acceptSnapshot(next);
+        if (next.session && next.snapshot) {
+          // The old party's ended event may arrive before this HTTP response.
+          // Only this explicit fresh-party reply can establish the new seat.
+          replaceSession(next.session);
+          setSnapshot(next.snapshot);
+          setStatus("connecting");
+          setError(null);
+          setNotice(null);
+          return true;
+        }
+        if (sessionRef.current?.token !== actor.token)
+          return next.snapshot === null;
+        if (next.snapshot) acceptSnapshot(next.snapshot);
         else {
           replaceSession(null);
           setSnapshot(null);
           setStatus("idle");
         }
+        return true;
       } catch (cause) {
-        if (cause instanceof RequestError && cause.code === "SESSION_ENDED") {
+        if (
+          cause instanceof RequestError &&
+          cause.code === "SESSION_ENDED" &&
+          sessionRef.current?.token === actor.token
+        ) {
           replaceSession(null);
           setSnapshot(null);
           setStatus("idle");
@@ -410,6 +468,7 @@ export function useParty(): PartyClient {
             ? cause.message
             : "That action could not be completed.",
         );
+        return false;
       } finally {
         busyRef.current = false;
         setBusy(false);
@@ -427,7 +486,12 @@ export function useParty(): PartyClient {
     (name: string, pin: string) => enter("/join", { name, pin }),
     [enter],
   );
+  const recover = useCallback(
+    (recoveryCode: string) => enter("/recover", { recoveryCode }),
+    [enter],
+  );
   const clearError = useCallback(() => setError(null), []);
+  const clearNotice = useCallback(() => setNotice(null), []);
 
   return {
     configured: Boolean(API),
@@ -437,12 +501,15 @@ export function useParty(): PartyClient {
     status,
     busy,
     error,
+    notice,
     create,
     join,
+    recover,
     act,
     reconnect,
     forget,
     clearError,
+    clearNotice,
     refreshParty,
   };
 }

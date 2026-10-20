@@ -118,10 +118,11 @@ export function Rules() {
         <li>
           <span>02</span>
           <div>
-            <strong>Give one clue each</strong>
+            <strong>Give a clue on your turn</strong>
             <p>
-              Say a short clue out loud on your turn. Don’t say or translate the
-              secret word. Imposter? Listen, blend in, and bluff.
+              Say a short clue out loud. Don’t say or translate the secret word.
+              The optional second clue cycle goes around the same order again.
+              Imposter? Listen, blend in, and bluff.
             </p>
           </div>
         </li>
@@ -146,12 +147,26 @@ export function Rules() {
             </p>
           </div>
         </li>
+        <li>
+          <span>05</span>
+          <div>
+            <strong>Optional last-chance guess</strong>
+            <p>
+              If enabled, a caught imposter gets one English or Nepali guess in
+              30 seconds before the word is revealed. A correct guess earns the
+              imposter 2 points instead. An incorrect guess, skip, or timeout
+              leaves each non-imposter with 1 point. Both twists are off in the
+              standard rules.
+            </p>
+          </div>
+        </li>
       </ol>
       <div className="notice">
         <ShieldCheck size={19} />
         <p>
-          No accounts, no uploads. Only your player names and setup are saved on
-          this device. Refreshing ends the current game.
+          No accounts or uploads in Pass & Play. This device saves your setup,
+          appearance, comfort options, and recent word IDs to avoid repeats
+          across games. Refreshing ends the current shared-phone game.
         </p>
       </div>
     </div>

@@ -10,6 +10,7 @@ import { ThemeProvider } from "./Appearance";
 import "./theme.css";
 import "./styles.css";
 import "./appearance.css";
+import "./roadmap.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

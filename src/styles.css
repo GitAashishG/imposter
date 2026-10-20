@@ -684,6 +684,8 @@ select {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
   margin-bottom: 25px;
 }
 .text-button {
@@ -703,6 +705,13 @@ select {
   font-size: 8px;
   color: var(--muted);
   letter-spacing: 1px;
+}
+.game-topbar .new-game-button {
+  min-height: 44px;
+  font-weight: 600;
+  background: var(--surface-active);
+  border-color: var(--green-border);
+  color: var(--ink);
 }
 .round-progress {
   margin: 0 auto 22px;
@@ -983,6 +992,52 @@ select {
   color: var(--orange);
   min-height: 35px;
   padding: 8px 0;
+}
+.last-chance-clock {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 16px;
+  margin-top: 22px;
+  border: 1px solid var(--imposter-border);
+  border-radius: 9px;
+  background: var(--imposter-bg);
+  color: var(--orange);
+}
+.last-chance-clock strong {
+  font-family: var(--display);
+  font-size: 35px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.last-chance-clock span {
+  font-size: 10px;
+  line-height: 1.7;
+}
+.last-chance-label {
+  display: block;
+  text-align: left;
+  font-size: 12px;
+  margin: 24px 0 8px;
+  color: var(--muted);
+}
+.last-chance-input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-soft);
+  color: var(--ink);
+  font-size: 16px;
+}
+.last-chance-skip {
+  min-height: 44px;
+  margin-top: 15px;
+  color: var(--muted);
 }
 .ballot-options {
   display: grid;
@@ -1641,6 +1696,9 @@ select {
   }
   .modal-header h2 {
     font-size: 23px;
+  }
+  .modal-actions {
+    flex-wrap: wrap;
   }
   .site-footer > span:first-child {
     font-size: 6px;

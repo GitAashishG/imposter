@@ -1,17 +1,31 @@
 import { DurableObject } from "cloudflare:workers";
-import type { PartyEntry, PartyEvent } from "../src/party/protocol";
+import type {
+  PartyActionResponse,
+  PartyEntry,
+  PartyEvent,
+} from "../src/party/protocol";
 import {
   PartyError,
   applyAction,
+  advanceTime,
   authenticate,
   createParty,
   exactKeys,
+  expirationMessage,
   joinParty,
   object,
+  migrateStoredParty,
+  nextAlarmDeadline,
+  normalizeRecoveryCode,
   pinMatches,
   project,
   publicInfo,
   requireParty,
+  recoverParty,
+  socketIdentityMatches,
+  updatePresence,
+  updateWordHistory,
+  validateAction,
   validateName,
   validatePin,
   validateSettings,
@@ -20,11 +34,12 @@ import {
 import {
   SerialQueue,
   checkPinThrottle,
+  checkRecoveryThrottle,
   hashSecret,
   hashToken,
   makeToken,
-  recordWrongPin,
-  type PinAttempt,
+  recordFailure,
+  type FailureAttempt,
 } from "./security";
 
 export interface Env {
@@ -39,6 +54,7 @@ const paths = new Map([
   ["/api/party", "GET"],
   ["/api/party/create", "POST"],
   ["/api/party/join", "POST"],
+  ["/api/party/recover", "POST"],
   ["/api/party/state", "GET"],
   ["/api/party/action", "POST"],
   ["/api/party/socket", "GET"],
@@ -181,13 +197,16 @@ export default {
 interface SocketAttachment {
   partyId: string | null;
   playerId: string | null;
+  tokenHash?: string | null;
   authDeadline: number;
 }
 
-/** The binding points to exactly one SQLite-backed room for this whole application. */
+/** One authoritative SQLite room; crypto, mutations, alarms and storage share one queue. */
 export class PartyRoom extends DurableObject<Env> {
   private party: PartyState | null = null;
-  private attempts: PinAttempt[] = [];
+  private history: string[] = [];
+  private attempts: FailureAttempt[] = [];
+  private recoveryAttempts: FailureAttempt[] = [];
   private readonly serial = new SerialQueue();
   private readonly randomBuffer = new Uint32Array(1);
 
@@ -197,18 +216,41 @@ export class PartyRoom extends DurableObject<Env> {
       ctx.storage.sql.exec(
         "CREATE TABLE IF NOT EXISTS party_store (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
       );
-      const rows = ctx.storage.sql.exec<{ key: string; value: string }>(
+      let saved: unknown = null;
+      let history: unknown;
+      for (const row of ctx.storage.sql.exec<{ key: string; value: string }>(
         "SELECT key, value FROM party_store",
-      );
-      for (const row of rows) {
-        if (row.key === "party")
-          this.party = JSON.parse(row.value) as PartyState;
+      )) {
+        if (row.key === "party") saved = JSON.parse(row.value);
+        if (row.key === "word_history") history = JSON.parse(row.value);
         if (row.key === "pin_attempts")
-          this.attempts = JSON.parse(row.value) as PinAttempt[];
+          this.attempts = JSON.parse(row.value) as FailureAttempt[];
+        if (row.key === "recovery_attempts")
+          this.recoveryAttempts = JSON.parse(row.value) as FailureAttempt[];
+      }
+      const migrated = migrateStoredParty(saved, history, Date.now());
+      this.saveParty(migrated.party, migrated.history);
+      // Only v1 migration may bind legacy authenticated sockets to the current credential.
+      // Later wakes must never re-authorize a revoked host by their seat ID alone.
+      if (migrated.legacy && this.party) {
+        for (const socket of ctx.getWebSockets()) {
+          const auth = this.attachment(socket);
+          const member =
+            auth?.partyId === this.party.id
+              ? this.party.players.find((player) => player.id === auth.playerId)
+              : undefined;
+          if (member && !auth?.tokenHash)
+            socket.serializeAttachment({
+              ...auth,
+              tokenHash: member.tokenHash,
+            });
+        }
       }
       ctx.setWebSocketAutoResponse(
         new WebSocketRequestResponsePair("ping", "pong"),
       );
+      await this.settle(Date.now());
+      this.broadcast(Date.now());
     });
   }
 
@@ -216,19 +258,12 @@ export class PartyRoom extends DurableObject<Env> {
     return socket.deserializeAttachment() as SocketAttachment | null;
   }
 
-  private connected(exclude?: WebSocket): Set<string> {
+  private connected(state = this.party, exclude?: WebSocket): Set<string> {
     const ids = new Set<string>();
-    if (!this.party) return ids;
     for (const socket of this.ctx.getWebSockets()) {
       if (socket === exclude || socket.readyState !== WebSocket.OPEN) continue;
       const auth = this.attachment(socket);
-      if (
-        auth?.partyId === this.party.id &&
-        auth.playerId &&
-        this.party.players.some((player) => player.id === auth.playerId)
-      ) {
-        ids.add(auth.playerId);
-      }
+      if (socketIdentityMatches(state, auth)) ids.add(auth!.playerId!);
     }
     return ids;
   }
@@ -237,6 +272,17 @@ export class PartyRoom extends DurableObject<Env> {
     try {
       socket.send(JSON.stringify(event));
     } catch {
+      // A failed send is not a live authenticated connection, even before its close callback.
+      try {
+        socket.serializeAttachment({
+          partyId: this.attachment(socket)?.partyId ?? null,
+          playerId: null,
+          tokenHash: null,
+          authDeadline: Date.now(),
+        } satisfies SocketAttachment);
+      } catch {
+        /* The socket may already be gone. */
+      }
       try {
         socket.close(1011, "Connection lost");
       } catch {
@@ -246,7 +292,11 @@ export class PartyRoom extends DurableObject<Env> {
   }
 
   private endSocket(socket: WebSocket, message: string): void {
-    this.send(socket, { type: "ended", message });
+    this.send(socket, {
+      type: "ended",
+      partyId: this.attachment(socket)?.partyId ?? null,
+      message,
+    });
     try {
       socket.close(1000, "Session ended");
     } catch {
@@ -254,72 +304,112 @@ export class PartyRoom extends DurableObject<Env> {
     }
   }
 
+  private endAll(message: string): void {
+    for (const socket of this.ctx.getWebSockets())
+      this.endSocket(socket, message);
+  }
+
   private broadcast(now: number, exclude?: WebSocket): void {
-    const connected = this.connected(exclude);
+    const connected = this.connected(this.party, exclude);
     for (const socket of this.ctx.getWebSockets()) {
       if (socket === exclude || socket.readyState !== WebSocket.OPEN) continue;
       const auth = this.attachment(socket);
       if (!auth?.playerId) continue;
-      if (
-        !this.party ||
-        auth.partyId !== this.party.id ||
-        !this.party.players.some((player) => player.id === auth.playerId)
-      ) {
-        this.endSocket(socket, "Your party session has ended.");
+      if (!socketIdentityMatches(this.party, auth)) {
+        this.endSocket(
+          socket,
+          "Your party session has ended or was replaced. Rejoin or recover hosting to continue.",
+        );
       } else {
         this.send(socket, {
           type: "snapshot",
-          snapshot: project(this.party, auth.playerId, now, connected),
+          snapshot: project(this.party!, auth.playerId, now, connected),
         });
       }
     }
   }
 
-  private writeState(): void {
-    if (this.party) {
-      this.ctx.storage.sql.exec(
-        "INSERT INTO party_store(key, value) VALUES ('party', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        JSON.stringify(this.party),
-      );
-    } else {
-      this.ctx.storage.sql.exec("DELETE FROM party_store WHERE key = 'party'");
-    }
-  }
-
-  private async scheduleAlarm(): Promise<void> {
-    let deadline = this.party?.expiresAt ?? Infinity;
-    for (const socket of this.ctx.getWebSockets()) {
-      const auth = this.attachment(socket);
-      if (socket.readyState === WebSocket.OPEN && !auth?.playerId)
-        deadline = Math.min(deadline, auth?.authDeadline ?? Date.now());
-    }
-    if (Number.isFinite(deadline)) await this.ctx.storage.setAlarm(deadline);
-    else await this.ctx.storage.deleteAlarm();
-  }
-
-  private async expire(now: number): Promise<void> {
-    if (this.party && this.party.expiresAt <= now) {
-      this.party = null;
-      this.writeState();
-      for (const socket of this.ctx.getWebSockets())
-        this.endSocket(
-          socket,
-          "This party expired after 12 hours without a game action.",
+  /** Personal state and separate non-personal history commit atomically before memory changes. */
+  private saveParty(next: PartyState | null, history = this.history): void {
+    const clearAttempts =
+      !next || (this.party !== null && this.party.id !== next.id);
+    this.ctx.storage.transactionSync(() => {
+      if (next) this.store("party", next);
+      else
+        this.ctx.storage.sql.exec(
+          "DELETE FROM party_store WHERE key = 'party'",
         );
-      await this.scheduleAlarm();
+      this.store("word_history", history);
+      if (clearAttempts)
+        this.ctx.storage.sql.exec(
+          "DELETE FROM party_store WHERE key IN ('pin_attempts', 'recovery_attempts')",
+        );
+    });
+    this.party = next;
+    this.history = history;
+    if (clearAttempts) {
+      this.attempts = [];
+      this.recoveryAttempts = [];
     }
   }
 
-  private async actor(request: Request, now: number): Promise<string> {
-    const header = request.headers.get("Authorization");
-    const match = header?.match(/^Bearer ([A-Za-z0-9_-]{43})$/);
+  private store(key: string, value: unknown): void {
+    this.ctx.storage.sql.exec(
+      "INSERT INTO party_store(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      key,
+      JSON.stringify(value),
+    );
+  }
+
+  private async scheduleAlarm(exclude?: WebSocket): Promise<void> {
+    if (this.party) {
+      const next = updatePresence(
+        this.party,
+        this.connected(this.party, exclude),
+        Date.now(),
+      );
+      if (next !== this.party) this.saveParty(next);
+    }
+    const unauthenticated: number[] = [];
+    for (const socket of this.ctx.getWebSockets()) {
+      if (socket.readyState !== WebSocket.OPEN) continue;
+      const auth = this.attachment(socket);
+      if (!auth?.playerId)
+        unauthenticated.push(auth?.authDeadline ?? Date.now());
+    }
+    const deadline = nextAlarmDeadline(this.party, unauthenticated);
+    if (deadline === null) await this.ctx.storage.deleteAlarm();
+    else await this.ctx.storage.setAlarm(deadline);
+  }
+
+  /** Alarms and requests share deadline resolution, preventing late guesses after delayed alarms. */
+  private async settle(now: number, exclude?: WebSocket): Promise<void> {
+    const previous = this.party;
+    const presence = previous
+      ? updatePresence(previous, this.connected(previous, exclude), now)
+      : null;
+    const next = advanceTime(presence, now);
+    if (next !== previous) {
+      this.saveParty(next);
+      if (previous && !next) this.endAll(expirationMessage(presence!));
+      else this.broadcast(now, exclude);
+    }
+    await this.scheduleAlarm(exclude);
+  }
+
+  private async actor(request: Request): Promise<string> {
+    const match = request.headers
+      .get("Authorization")
+      ?.match(/^Bearer ([A-Za-z0-9_-]{43})$/);
     if (!match)
       throw new PartyError(
         "SESSION_ENDED",
         "This player session has ended.",
         401,
       );
-    return authenticate(this.party, await hashToken(match[1]), now);
+    const hash = await hashToken(match[1]);
+    await this.settle(Date.now());
+    return authenticate(this.party, hash, Date.now());
   }
 
   private secureRandom(): number {
@@ -330,36 +420,41 @@ export class PartyRoom extends DurableObject<Env> {
     body: Record<string, unknown>,
     creating: boolean,
     request: Request,
-    now: number,
   ): Promise<Response> {
     exactKeys(body, creating ? ["name", "pin", "settings"] : ["name", "pin"]);
     const name = validateName(body.name);
     const pin = validatePin(body.pin);
+    if (creating) validateSettings(body.settings);
+    const ipKey = creating
+      ? ""
+      : await hashSecret(request.headers.get("CF-Connecting-IP") || "local");
+    const token = makeToken();
+    const member = {
+      id: crypto.randomUUID(),
+      name,
+      tokenHash: await hashToken(token),
+    };
+    await this.settle(Date.now());
+    const now = Date.now();
     if (creating && this.party)
       throw new PartyError(
         "PARTY_EXISTS",
         "There is already an active party. Join it with its PIN.",
         409,
       );
-    if (creating) validateSettings(body.settings);
     if (!creating) {
       const party = requireParty(this.party, now);
       if (party.phase !== "lobby")
         throw new PartyError(
           "NOT_IN_LOBBY",
-          "Wait for the host to return to the lobby.",
+          "Wait for the host to start a new game in the lobby.",
           409,
         );
-      const ipKey = await hashSecret(
-        request.headers.get("CF-Connecting-IP") || "local",
-      );
       checkPinThrottle(this.attempts, ipKey, now);
       if (!pinMatches(party.pin, pin)) {
-        this.attempts = recordWrongPin(this.attempts, ipKey, now);
-        this.ctx.storage.sql.exec(
-          "INSERT INTO party_store(key, value) VALUES ('pin_attempts', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-          JSON.stringify(this.attempts),
-        );
+        const attempts = recordFailure(this.attempts, ipKey, now);
+        this.store("pin_attempts", attempts);
+        this.attempts = attempts;
         throw new PartyError(
           "WRONG_PIN",
           "That party PIN is not correct.",
@@ -367,19 +462,12 @@ export class PartyRoom extends DurableObject<Env> {
         );
       }
     }
-    const token = makeToken();
-    const member = {
-      id: crypto.randomUUID(),
-      name,
-      tokenHash: await hashToken(token),
-    };
     const next = creating
       ? createParty(crypto.randomUUID(), member, pin, body.settings, now)
       : joinParty(this.party!, member, pin, now);
-    this.party = next;
-    this.writeState();
-    await this.scheduleAlarm();
+    this.saveParty(next);
     this.broadcast(now);
+    await this.scheduleAlarm();
     const entry: PartyEntry = {
       session: { partyId: next.id, playerId: member.id, token },
       snapshot: project(next, member.id, now, this.connected()),
@@ -387,14 +475,115 @@ export class PartyRoom extends DurableObject<Env> {
     return json(entry, creating ? 201 : 200);
   }
 
+  private async recover(
+    body: Record<string, unknown>,
+    request: Request,
+  ): Promise<Response> {
+    exactKeys(body, ["recoveryCode"]);
+    const ipKey = await hashSecret(
+      request.headers.get("CF-Connecting-IP") || "local",
+    );
+    await this.settle(Date.now());
+    let now = Date.now();
+    const party = requireParty(this.party, now);
+    checkRecoveryThrottle(this.recoveryAttempts, ipKey, now);
+    const code = normalizeRecoveryCode(body.recoveryCode);
+    if (
+      !code ||
+      !pinMatches(normalizeRecoveryCode(party.hostRecoveryCode), code)
+    ) {
+      const attempts = recordFailure(this.recoveryAttempts, ipKey, now);
+      this.store("recovery_attempts", attempts);
+      this.recoveryAttempts = attempts;
+      throw new PartyError(
+        "WRONG_RECOVERY_CODE",
+        "That private host recovery code is not correct.",
+        403,
+      );
+    }
+    const token = makeToken();
+    const tokenHash = await hashToken(token);
+    await this.settle(Date.now());
+    now = Date.now();
+    let next = recoverParty(
+      requireParty(this.party, now),
+      code,
+      tokenHash,
+      now,
+    );
+    next = updatePresence(next, this.connected(next), now);
+    this.saveParty(next);
+    this.broadcast(now);
+    await this.scheduleAlarm();
+    const entry: PartyEntry = {
+      session: { partyId: next.id, playerId: next.hostId, token },
+      snapshot: project(next, next.hostId, now, this.connected()),
+    };
+    return json(entry);
+  }
+
+  private async act(
+    body: Record<string, unknown>,
+    request: Request,
+  ): Promise<Response> {
+    exactKeys(body, ["action"]);
+    const actorId = await this.actor(request);
+    const action = validateAction(body.action);
+    const token = action.type === "fresh-party" ? makeToken() : null;
+    const freshHost = token
+      ? { id: crypto.randomUUID(), tokenHash: await hashToken(token) }
+      : undefined;
+    await this.settle(Date.now());
+    const now = Date.now();
+    const previous = requireParty(this.party, now);
+    let next = applyAction(
+      previous,
+      actorId,
+      action,
+      now,
+      this.connected(),
+      () => this.secureRandom(),
+      {
+        recentWordIds: this.history,
+        freshHost,
+      },
+    );
+    if (next !== previous) {
+      if (next) next = updatePresence(next, this.connected(next), now);
+      this.saveParty(next, updateWordHistory(previous, next, this.history));
+      if (!next)
+        this.endAll(
+          "The host ended this party. Join or create a new party when you are ready.",
+        );
+      else if (next.id !== previous.id)
+        this.endAll(
+          "The host started a fresh party. Ask for the new PIN and join again.",
+        );
+      else this.broadcast(now);
+      await this.scheduleAlarm();
+    }
+    const session =
+      next && token && freshHost
+        ? { partyId: next.id, playerId: freshHost.id, token }
+        : undefined;
+    const selfId = session?.playerId ?? actorId;
+    const response: PartyActionResponse = {
+      snapshot:
+        next && next.players.some((player) => player.id === selfId)
+          ? project(next, selfId, now, this.connected())
+          : null,
+      ...(session ? { session } : {}),
+    };
+    return json(response);
+  }
+
   private async upgrade(request: Request, now: number): Promise<Response> {
-    if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+    if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket")
       throw new PartyError(
         "UPGRADE_REQUIRED",
         "Open a WebSocket connection to this endpoint.",
         426,
       );
-    }
     if (this.ctx.getWebSockets().length >= MAX_SOCKETS)
       throw new PartyError(
         "TOO_MANY_CONNECTIONS",
@@ -407,6 +596,7 @@ export class PartyRoom extends DurableObject<Env> {
     server.serializeAttachment({
       partyId: null,
       playerId: null,
+      tokenHash: null,
       authDeadline: now + AUTH_TIMEOUT_MS,
     } satisfies SocketAttachment);
     this.ctx.acceptWebSocket(server);
@@ -417,48 +607,30 @@ export class PartyRoom extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     try {
       const url = new URL(request.url);
-      // Read bounded HTTP bodies outside the mutation queue so slow uploads cannot hold its lock.
+      // Slow bounded uploads cannot hold the mutation lock.
       const body = request.method === "POST" ? await readJson(request) : null;
       return await this.serial.run(async () => {
         const now = Date.now();
-        await this.expire(now);
+        await this.settle(now);
         switch (url.pathname) {
           case "/api/party":
             return json(publicInfo(this.party, now));
           case "/api/party/create":
-            return this.enter(body!, true, request, now);
+            return this.enter(body!, true, request);
           case "/api/party/join":
-            return this.enter(body!, false, request, now);
+            return this.enter(body!, false, request);
+          case "/api/party/recover":
+            return this.recover(body!, request);
           case "/api/party/socket":
             return this.upgrade(request, now);
           case "/api/party/state": {
-            const actorId = await this.actor(request, now);
-            return json(project(this.party!, actorId, now, this.connected()));
-          }
-          case "/api/party/action": {
-            exactKeys(body!, ["action"]);
-            const actorId = await this.actor(request, now);
-            const previous = this.party!;
-            const next = applyAction(
-              previous,
-              actorId,
-              body!.action,
-              now,
-              this.connected(),
-              () => this.secureRandom(),
-            );
-            if (next !== previous) {
-              this.party = next;
-              this.writeState();
-              await this.scheduleAlarm();
-              this.broadcast(now);
-            }
+            const actorId = await this.actor(request);
             return json(
-              next && next.players.some((player) => player.id === actorId)
-                ? project(next, actorId, now, this.connected())
-                : null,
+              project(this.party!, actorId, Date.now(), this.connected()),
             );
           }
+          case "/api/party/action":
+            return this.act(body!, request);
           default:
             throw new PartyError(
               "NOT_FOUND",
@@ -477,16 +649,22 @@ export class PartyRoom extends DurableObject<Env> {
     message: string | ArrayBuffer,
   ): Promise<void> {
     await this.serial.run(async () => {
-      const now = Date.now();
-      await this.expire(now);
+      let now = Date.now();
+      await this.settle(now);
       if (socket.readyState !== WebSocket.OPEN) return;
       const prior = this.attachment(socket);
       if (prior?.playerId) {
-        this.send(socket, {
-          type: "error",
-          code: "UNKNOWN_MESSAGE",
-          error: "Game actions use the authenticated HTTP action endpoint.",
-        });
+        if (!socketIdentityMatches(this.party, prior))
+          this.endSocket(
+            socket,
+            "Your session was replaced. Rejoin or recover hosting to continue.",
+          );
+        else
+          this.send(socket, {
+            type: "error",
+            code: "UNKNOWN_MESSAGE",
+            error: "Game actions use the authenticated HTTP action endpoint.",
+          });
         return;
       }
       try {
@@ -499,12 +677,11 @@ export class PartyRoom extends DurableObject<Env> {
         if (
           typeof message !== "string" ||
           new TextEncoder().encode(message).byteLength > BODY_LIMIT
-        ) {
+        )
           throw new PartyError(
             "INVALID_BODY",
             "Send a small JSON authentication message.",
           );
-        }
         let body: Record<string, unknown>;
         try {
           body = object(JSON.parse(message));
@@ -521,18 +698,25 @@ export class PartyRoom extends DurableObject<Env> {
             "Authenticate this connection first.",
             401,
           );
-        const actorId = authenticate(
-          this.party,
-          await hashToken(body.token),
-          now,
-        );
+        const tokenHash = await hashToken(body.token);
+        await this.settle(Date.now());
+        now = Date.now();
+        if (prior.authDeadline <= now)
+          throw new PartyError(
+            "SESSION_ENDED",
+            "The connection authentication timed out.",
+            401,
+          );
+        const actorId = authenticate(this.party, tokenHash, now);
         socket.serializeAttachment({
           partyId: this.party!.id,
           playerId: actorId,
+          tokenHash,
           authDeadline: 0,
         } satisfies SocketAttachment);
-        await this.scheduleAlarm();
+        await this.settle(now);
         this.broadcast(now);
+        await this.scheduleAlarm();
       } catch (error) {
         const known =
           error instanceof PartyError
@@ -559,20 +743,19 @@ export class PartyRoom extends DurableObject<Env> {
     reason: string,
     wasClean: boolean,
   ): Promise<void> {
-    // Do not reflect remote close reasons, which are untrusted and might contain secrets.
+    // Do not reflect remote close reasons, which may contain secrets.
     void code;
     void reason;
     void wasClean;
     await this.serial.run(async () => {
-      const now = Date.now();
-      await this.expire(now);
       try {
         socket.close(1000, "Connection closed");
       } catch {
         /* Already closed. */
       }
+      const now = Date.now();
+      await this.settle(now, socket);
       this.broadcast(now, socket);
-      await this.scheduleAlarm();
     });
   }
 
@@ -583,12 +766,12 @@ export class PartyRoom extends DurableObject<Env> {
   async alarm(): Promise<void> {
     await this.serial.run(async () => {
       const now = Date.now();
-      await this.expire(now);
+      await this.settle(now);
       for (const socket of this.ctx.getWebSockets()) {
+        if (socket.readyState !== WebSocket.OPEN) continue;
         const auth = this.attachment(socket);
-        if (!auth?.playerId && (!auth || auth.authDeadline <= now)) {
+        if (!auth?.playerId && (!auth || auth.authDeadline <= now))
           this.endSocket(socket, "The connection authentication timed out.");
-        }
       }
       await this.scheduleAlarm();
     });

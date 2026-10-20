@@ -1,11 +1,5 @@
 import { useEffect, useState } from "react";
-import {
-  ArrowLeft,
-  CircleHelp,
-  RotateCcw,
-  ShieldCheck,
-  Trophy,
-} from "lucide-react";
+import { CircleHelp, RotateCcw, ShieldCheck, Trophy } from "lucide-react";
 import Setup, { loadPreferences, savePreferences } from "./Setup";
 import type { Preferences } from "./Setup";
 import { Eyes, Modal, Rules, Scoreboard } from "./components";
@@ -15,6 +9,7 @@ import {
   Discussion,
   FinalResult,
   Handoff,
+  LastChance,
   RoleReveal,
   RoundProgress,
   RoundResult,
@@ -22,6 +17,7 @@ import {
 import { useGame } from "./useGame";
 import { PlayModeSwitch } from "./PlayModeSwitch";
 import { ThemeToggle } from "./Appearance";
+import { DeviceOptions } from "./DeviceOptions";
 
 export default function App({ onParty }: { onParty: () => void }) {
   const [state, dispatch] = useGame();
@@ -32,6 +28,13 @@ export default function App({ onParty }: { onParty: () => void }) {
   const playing = state.phase !== "setup";
   const match = "match" in state ? state.match : null;
 
+  const deviceActive = ["role", "clue", "discussion", "vote", "guess"].includes(
+    state.phase,
+  );
+  const turnKey =
+    state.phase === "clue"
+      ? `${state.match.gameId}:${state.match.round.number}:${state.index}`
+      : null;
   useEffect(() => {
     const hide = () => dispatch({ type: "HIDE" });
     const visibility = () => {
@@ -109,14 +112,18 @@ export default function App({ onParty }: { onParty: () => void }) {
           }
         }}
       />
+      <DeviceOptions active={deviceActive} turnKey={turnKey} />
 
       {state.phase === "setup" ? (
         <Setup initial={preferences} onStart={start} />
       ) : (
         <main className="game-layout">
           <div className="game-topbar">
-            <button className="text-button" onClick={() => showModal("reset")}>
-              <ArrowLeft size={15} /> New game
+            <button
+              className="secondary-button new-game-button"
+              onClick={() => showModal("reset")}
+            >
+              <RotateCcw size={15} /> New game, same players
             </button>
             <span>
               <ShieldCheck size={14} /> ONE PHONE. SAME CIRCLE.
@@ -174,6 +181,19 @@ export default function App({ onParty }: { onParty: () => void }) {
                 onReveal={() => dispatch({ type: "REVEAL" })}
               />
             ))}
+          {state.phase === "guess" && (
+            <LastChance
+              key={`${state.match.gameId}:${state.match.round.number}`}
+              player={state.match.players.find(
+                (player) => player.id === state.match.round.imposterId,
+              )!}
+              deadline={state.deadline}
+              revealed={state.revealed}
+              onReveal={() => dispatch({ type: "REVEAL" })}
+              onGuess={(guess) => dispatch({ type: "GUESS", guess })}
+              onSkip={() => dispatch({ type: "SKIP_GUESS" })}
+            />
+          )}
           {state.phase === "result" && (
             <RoundResult
               match={state.match}
@@ -184,7 +204,7 @@ export default function App({ onParty }: { onParty: () => void }) {
           {state.phase === "final" && (
             <FinalResult
               match={state.match}
-              onAgain={() => dispatch({ type: "RESET" })}
+              onAgain={() => showModal("reset")}
             />
           )}
           <div className="game-bottom-note">
@@ -217,14 +237,20 @@ export default function App({ onParty }: { onParty: () => void }) {
               : `Round ${match.round.number} of ${match.settings.rounds}`}{" "}
             · Catch the imposter: +1 each. Escape: +2.
           </p>
+          {state.phase === "guess" && (
+            <p className="modal-description">
+              This round’s points are pending until the last chance ends.
+            </p>
+          )}
           <Scoreboard players={match.players} />
         </Modal>
       )}
       {modal === "reset" && (
-        <Modal title="Start a fresh game?" onClose={() => setModal(null)}>
+        <Modal title="New game, same players?" onClose={() => setModal(null)}>
           <p className="modal-description">
-            This ends the current game and clears its scores. Your names and
-            setup will stay.
+            This ends the current game and clears scores, roles, and votes. Your
+            player names and settings stay, and recent words stay remembered.
+            You’ll return to setup before starting round 1.
           </p>
           <div className="modal-actions">
             <button className="secondary-button" onClick={() => setModal(null)}>
@@ -237,7 +263,7 @@ export default function App({ onParty }: { onParty: () => void }) {
                 dispatch({ type: "RESET" });
               }}
             >
-              <RotateCcw size={16} /> Start fresh
+              <RotateCcw size={16} /> New game
             </button>
           </div>
         </Modal>
@@ -246,8 +272,8 @@ export default function App({ onParty }: { onParty: () => void }) {
         <Modal title="Switch to Own Phones?" onClose={() => setModal(null)}>
           <p className="modal-description">
             Switching ends this shared-phone game and clears its scores. Your
-            saved names and setup will stay. Everyone can then join the
-            own-phone party on their own device.
+            saved names, setup, and recent word history will stay. Everyone can
+            then join the own-phone party on their own device.
           </p>
           <div className="modal-actions">
             <button className="secondary-button" onClick={() => setModal(null)}>

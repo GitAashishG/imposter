@@ -10,6 +10,8 @@ export interface Settings {
   packIds: PackId[];
   rounds: number;
   discussionSeconds: number;
+  clueCycles: 1 | 2;
+  lastChanceGuess: boolean;
 }
 
 export interface Round {
@@ -26,6 +28,21 @@ export interface Outcome {
   accusedId: string | null;
   voteCounts: Record<string, number>;
   awards: Record<string, number>;
+  guessResult: "correct" | "incorrect" | "skipped" | null;
+}
+
+export const DEFAULT_SETTINGS: Settings = {
+  packIds: ["everyday", "culture", "diaspora", "classic"],
+  rounds: 5,
+  discussionSeconds: 60,
+  clueCycles: 1,
+  lastChanceGuess: false,
+};
+export const LAST_CHANCE_SECONDS = 30;
+export const RECENT_WORD_LIMIT = 200;
+
+export function rememberWord(history: string[], wordId: string): string[] {
+  return [...history.slice(-(RECENT_WORD_LIMIT - 1)), wordId];
 }
 
 const validPackIds = new Set(PACKS.map((pack) => pack.id));
@@ -70,7 +87,26 @@ export function validateSetup(
   if (![30, 60, 90, 120].includes(settings.discussionSeconds)) {
     return "Choose a discussion time of 30, 60, 90, or 120 seconds.";
   }
+  if (settings.clueCycles !== 1 && settings.clueCycles !== 2) {
+    return "Choose one or two clue cycles.";
+  }
+  if (typeof settings.lastChanceGuess !== "boolean") {
+    return "Choose whether to allow a last-chance guess.";
+  }
   return null;
+}
+
+/** Upgrade saved preferences/state only; new API requests use strict validation. */
+export function migrateSettings(value: unknown): Settings | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const saved = value as Record<string, unknown>;
+  const candidate = {
+    ...saved,
+    clueCycles: saved.clueCycles ?? 1,
+    lastChanceGuess: saved.lastChanceGuess ?? false,
+  } as unknown as Settings;
+  if (validateSetup(["First", "Second", "Third"], candidate)) return null;
+  return { ...candidate, packIds: [...candidate.packIds] };
 }
 
 function playerIds(players: Player[]): Set<string> {
@@ -134,15 +170,16 @@ export function createRound(
   const pool = WORDS.filter((word) => selectedPacks.has(word.packId));
   if (pool.length === 0)
     throw new Error("The selected packs contain no words.");
-  const poolIds = new Set(pool.map((word) => word.id));
-  const usedThisCycle = new Set<string>();
-  // History spans the whole match. Replaying it preserves nonrepetition after a reset too.
-  for (const id of usedWordIds) {
-    if (!poolIds.has(id)) continue;
-    usedThisCycle.add(id);
-    if (usedThisCycle.size === poolIds.size) usedThisCycle.clear();
+  const lastSeen = new Map<string, number>();
+  for (let index = 0; index < usedWordIds.length; index += 1) {
+    lastSeen.set(usedWordIds[index]!, index);
   }
-  const available = pool.filter((word) => !usedThisCycle.has(word.id));
+  let available = pool.filter((word) => !lastSeen.has(word.id));
+  if (available.length === 0) {
+    let oldest = Infinity;
+    for (const word of pool) oldest = Math.min(oldest, lastSeen.get(word.id)!);
+    available = pool.filter((word) => lastSeen.get(word.id) === oldest);
+  }
   const word = available[randomIndex(available.length, random)]!;
   const imposterId = players[randomIndex(players.length, random)]!.id;
   const clueOrder = players.map((player) => player.id);
@@ -236,7 +273,58 @@ export function resolveRound(round: Round, players: Player[]): Outcome {
           : 0,
     ]),
   );
-  return { caught, tied, accusedId, voteCounts, awards };
+  return { caught, tied, accusedId, voteCounts, awards, guessResult: null };
+}
+
+function normalizedGuess(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLocaleLowerCase("en-US")
+    .replace(/[\s\p{P}\p{S}]/gu, "");
+}
+
+export function matchesWord(word: Word, guess: string): boolean {
+  if (typeof guess !== "string" || !guess.trim() || guess.length > 80)
+    return false;
+  const normalized = normalizedGuess(guess);
+  if (!normalized) return false;
+  return [word.english, word.nepali, ...(word.aliases ?? [])].some(
+    (answer) => normalizedGuess(answer) === normalized,
+  );
+}
+
+/** Call only after a caught imposter's one permitted attempt, skip, or timeout. */
+export function resolveLastChance(
+  round: Round,
+  players: Player[],
+  guess: string | null,
+): Outcome {
+  const outcome = resolveRound(round, players);
+  if (!outcome.caught)
+    throw new Error("Only a caught imposter gets a last-chance guess.");
+  if (
+    guess !== null &&
+    (typeof guess !== "string" || !guess.trim() || guess.length > 80)
+  ) {
+    throw new Error("Enter one word or phrase of 1–80 characters.");
+  }
+  const correct = guess !== null && matchesWord(round.word, guess);
+  if (!correct)
+    return {
+      ...outcome,
+      guessResult: guess === null ? "skipped" : "incorrect",
+    };
+  return {
+    ...outcome,
+    caught: false,
+    guessResult: "correct",
+    awards: Object.fromEntries(
+      players.map((player) => [
+        player.id,
+        player.id === round.imposterId ? 2 : 0,
+      ]),
+    ),
+  };
 }
 
 export function applyAwards(players: Player[], outcome: Outcome): Player[] {

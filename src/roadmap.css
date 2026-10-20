@@ -1,0 +1,274 @@
+.game-options {
+  margin: 20px 0 0;
+  padding: 16px 0 0;
+  border-top: 1px solid var(--line);
+}
+.game-options legend {
+  font-size: 12px;
+  font-weight: 650;
+  padding: 0 8px 0 0;
+  width: auto;
+}
+.clue-cycle-choice {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  margin-top: 12px;
+}
+.clue-cycle-choice > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.clue-cycle-choice strong,
+.last-chance-choice strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+}
+.clue-cycle-choice p,
+.last-chance-choice small {
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--muted);
+  margin-top: 5px;
+  display: block;
+}
+.rule-segmented {
+  display: flex;
+  flex-shrink: 0;
+  gap: 3px;
+  padding: 3px;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+.rule-segmented button {
+  min-height: 40px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  border: 0;
+  background: transparent;
+  font-size: 11px;
+}
+.rule-segmented button[aria-pressed="true"] {
+  background: var(--selected-bg);
+  color: var(--selected-ink);
+}
+.last-chance-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 17px;
+  cursor: pointer;
+}
+.game-options .last-chance-choice input {
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  flex: 0 0 18px;
+  margin: 2px 0 0;
+  accent-color: var(--orange);
+}
+.rule-default-note {
+  font-size: 10px;
+  line-height: 1.7;
+  color: var(--subtle);
+  margin-top: 12px;
+}
+.device-options {
+  width: min(100%, 600px);
+  margin: 13px auto 0;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--muted);
+}
+.device-options > summary {
+  min-height: 44px;
+  padding: 10px 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  list-style: none;
+  cursor: pointer;
+  font-size: 11px;
+}
+.device-options > summary::-webkit-details-marker {
+  display: none;
+}
+.device-options > summary > small {
+  margin-left: auto;
+  font-size: 9px;
+  color: var(--subtle);
+}
+.device-options > summary::after {
+  content: "+";
+  font-size: 15px;
+  margin-left: 5px;
+}
+.device-options[open] > summary::after {
+  content: "−";
+}
+.device-options > summary:focus-visible,
+.invite-link-details > summary:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+.device-options-body {
+  border-top: 1px solid var(--line);
+  padding: 15px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+.device-option-row label {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.7;
+  color: var(--ink);
+  cursor: pointer;
+}
+.device-option-row label > span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.device-options .device-option-row input {
+  width: 17px;
+  height: 17px;
+  min-height: 17px;
+  flex: 0 0 17px;
+  margin: 2px 0 0;
+  accent-color: var(--orange);
+}
+.device-option-row p {
+  font-size: 10px;
+  line-height: 1.8;
+  color: var(--muted);
+  margin-top: 7px;
+}
+.device-retry {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 6px;
+  font-size: 10px;
+  padding: 8px 10px;
+  min-height: 36px;
+  margin-top: 9px;
+}
+.invite-link {
+  margin-top: 24px;
+  padding: 17px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+  text-align: left;
+}
+.invite-link h3 {
+  font-size: 13px;
+  font-weight: 600;
+}
+.invite-link p {
+  font-size: 11px;
+  line-height: 1.8;
+  color: var(--muted);
+  margin-top: 8px;
+}
+.invite-link-copy {
+  display: flex;
+  gap: 7px;
+  margin-top: 12px;
+}
+.invite-link-copy input {
+  width: 0;
+  flex: 1;
+  min-width: 0;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 9px;
+  font-size: 12px;
+  min-height: 44px;
+}
+.invite-link-copy button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 10px;
+  border: 1px solid var(--green-border);
+  background: var(--green-bg);
+  color: var(--green);
+  border-radius: 6px;
+  font-size: 11px;
+  min-height: 44px;
+}
+.invite-link-details {
+  margin-top: 11px;
+}
+.invite-link-details > summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  cursor: pointer;
+  min-height: 44px;
+}
+.invite-link-qr {
+  width: fit-content;
+  max-width: 100%;
+  margin: 10px auto;
+  background: #ffffff;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.invite-link-qr svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+.invite-copy-message {
+  color: var(--green);
+}
+@media (max-width: 600px) {
+  .device-options-body {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+  .device-options > summary > small {
+    display: none;
+  }
+  .device-options > summary::after {
+    margin-left: auto;
+  }
+}
+@media (max-width: 400px) {
+  .clue-cycle-choice {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 9px;
+  }
+  .rule-segmented {
+    width: 100%;
+  }
+  .rule-segmented button {
+    flex: 1;
+  }
+  .invite-link {
+    padding: 13px;
+  }
+  .invite-link-copy {
+    flex-direction: column;
+  }
+  .invite-link-copy input {
+    width: 100%;
+    flex: auto;
+  }
+  .invite-link-copy button {
+    justify-content: center;
+  }
+}

@@ -287,7 +287,7 @@
 }
 .party-mode-switch {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
   padding: 4px;
   background: var(--soft-green);
@@ -295,6 +295,8 @@
 }
 .party-mode-switch button {
   border: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
   background: transparent;
   border-radius: 6px;
   font-size: 12px;
@@ -468,14 +470,6 @@
   background: var(--green-bg);
   border-radius: 9px;
   margin-bottom: 30px;
-}
-.party-pin-display {
-  display: block;
-  font-size: 30px;
-  letter-spacing: 5px;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-  margin-top: 8px;
 }
 .party-invite p {
   flex-basis: 100%;
@@ -966,23 +960,143 @@
 }
 .party-management {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
   flex-wrap: wrap;
-  justify-content: center;
-  gap: 12px 30px;
-  margin-top: 25px;
+  gap: 14px 20px;
+  margin-bottom: 25px;
+  padding: 18px;
+  border: 1px solid var(--green-border);
+  border-radius: 10px;
+  background: var(--surface);
 }
-.party-management > p {
+.party-management > div {
+  min-width: 0;
+  flex: 1 1 230px;
+  overflow-wrap: anywhere;
+}
+.party-management strong {
+  font-size: 13px;
+}
+.party-management p {
+  margin-top: 5px;
   color: var(--muted);
   font-size: 11px;
   line-height: 1.8;
-  text-align: center;
 }
-.party-management .party-link {
-  font-size: 11px;
+.party-management .party-manage-button {
+  border-color: var(--selected-bg);
+  color: var(--selected-ink);
+  background: var(--selected-bg);
+  font-size: 13px;
+}
+.party-management .party-manage-button:hover {
+  color: var(--ink);
+  background: var(--surface-active);
+}
+.party-notice {
+  color: var(--green);
+  border-color: var(--green-border);
+  background: var(--green-bg);
+}
+.party-control-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
+.party-control-row > button {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.party-secret-control {
+  min-width: 0;
+  width: 100%;
+}
+.party-secret-control .party-field {
+  margin-top: 0;
+}
+.party-secret-control input {
+  min-width: 0;
+  font-family: ui-monospace, monospace;
+  font-size: 14px;
+}
+.party-manage-actions {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+.party-manage-choice {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  width: 100%;
+  padding: 15px;
+  text-align: left;
+  color: var(--ink);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+.party-manage-choice strong {
+  font-size: 13px;
+}
+.party-manage-choice span {
   color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
 }
-.party-management .party-danger-link {
+.party-manage-choice:hover:not(:disabled) {
+  background: var(--surface-active);
+  border-color: var(--green-border);
+}
+.party-manage-danger strong {
   color: var(--error);
+}
+.party-manage-section {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+.party-manage-section h3 {
+  font-size: 15px;
+  margin-bottom: 10px;
+}
+.party-manage-section .party-secret-control {
+  margin: 16px 0;
+}
+.party-transfer-list {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0;
+}
+.party-transfer-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.party-transfer-list li > span {
+  min-width: 0;
+  flex: 1 1 140px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.party-transfer-list small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 4px;
+}
+.party-dialog-content .modal-actions > button {
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .party-empty {
   max-width: 650px;
@@ -1228,10 +1342,6 @@
     padding: 9px 5px;
     font-size: 11px;
   }
-  .party-pin-display {
-    font-size: 25px;
-    letter-spacing: 4px;
-  }
   .party-invite {
     padding: 15px;
   }
@@ -1274,6 +1384,15 @@
   }
   .party-banner {
     padding: 13px;
+  }
+  .party-mode-switch {
+    grid-template-columns: 1fr;
+  }
+  .party-management .party-button {
+    width: 100%;
+  }
+  .party-dialog-content .modal-actions > button {
+    width: 100%;
   }
   .party-empty {
     padding: 30px 20px;

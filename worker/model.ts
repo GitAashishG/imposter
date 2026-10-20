@@ -1,9 +1,14 @@
 import {
   applyAwards,
   createRound,
+  LAST_CHANCE_SECONDS,
+  RECENT_WORD_LIMIT,
+  migrateSettings,
+  rememberWord,
   rankPlayers,
   recordVote,
   resolveRound,
+  resolveLastChance,
   validateSetup,
   type Outcome,
   type Player,
@@ -18,6 +23,8 @@ import type {
 } from "../src/party/protocol";
 
 export const PARTY_TTL_MS = 12 * 60 * 60 * 1000;
+export const ABANDONED_TTL_MS = 15 * 60 * 1000;
+export const PARTY_SCHEMA_VERSION = 2;
 
 export class PartyError extends Error {
   constructor(
@@ -36,7 +43,11 @@ export interface Member extends Player {
 
 /** Server-only. Never serialize this object to a client. */
 export interface PartyState {
+  schemaVersion: typeof PARTY_SCHEMA_VERSION;
   id: string;
+  gameId: string;
+  hostRecoveryCode: string;
+  notice: { id: string; message: string } | null;
   revision: number;
   hostId: string;
   pin: string;
@@ -45,11 +56,12 @@ export interface PartyState {
   settings: Settings;
   round: Round | null;
   outcome: Outcome | null;
-  usedWordIds: string[];
   readyIds: string[];
   clueIndex: number;
   discussion: { deadline: number | null; remainingMs: number };
   expiresAt: number;
+  abandonedExpiresAt: number | null;
+  guessDeadline: number | null;
 }
 
 function fail(code: string, message: string, status = 400): never {
@@ -92,7 +104,13 @@ export function validatePin(value: unknown): string {
 
 export function validateSettings(value: unknown): Settings {
   const candidate = object(value);
-  exactKeys(candidate, ["packIds", "rounds", "discussionSeconds"]);
+  exactKeys(candidate, [
+    "packIds",
+    "rounds",
+    "discussionSeconds",
+    "clueCycles",
+    "lastChanceGuess",
+  ]);
   const settings = candidate as unknown as Settings;
   const error = validateSetup(["First", "Second", "Third"], settings);
   if (error) fail("INVALID_SETTINGS", error);
@@ -115,7 +133,12 @@ export function validateAction(value: unknown): PartyAction {
     "start-vote": ["roundNumber"],
     vote: ["roundNumber", "suspectId"],
     "next-round": ["roundNumber"],
-    "back-to-lobby": [],
+    "guess-word": ["roundNumber", "guess"],
+    "skip-guess": ["roundNumber"],
+    "new-game": [],
+    "fresh-party": ["pin"],
+    "transfer-host": ["playerId"],
+    "rotate-recovery": [],
     "remove-player": ["playerId"],
     leave: [],
     "end-party": [],
@@ -127,7 +150,14 @@ export function validateAction(value: unknown): PartyAction {
     fail("UNKNOWN_ACTION", "That party command is not supported.");
   }
   const required = fields[candidate.type]!;
-  exactKeys(candidate, ["type", ...required]);
+  exactKeys(candidate, ["type", "gameId", ...required]);
+  if (typeof candidate.gameId !== "string" || !candidate.gameId) {
+    fail(
+      "UPDATE_REQUIRED",
+      "Refresh this page to update Ko Ho? before sending another command.",
+      409,
+    );
+  }
   if (required.some((key) => !Object.hasOwn(candidate, key))) {
     fail("INVALID_ACTION", "The command is missing a required field.");
   }
@@ -154,7 +184,20 @@ export function validateAction(value: unknown): PartyAction {
     }
   }
   if (candidate.type === "settings") {
-    return { type: "settings", settings: validateSettings(candidate.settings) };
+    return {
+      type: "settings",
+      gameId: candidate.gameId,
+      settings: validateSettings(candidate.settings),
+    };
+  }
+  if (candidate.type === "fresh-party") validatePin(candidate.pin);
+  if (
+    candidate.type === "guess-word" &&
+    (typeof candidate.guess !== "string" ||
+      !candidate.guess.trim() ||
+      candidate.guess.length > 80)
+  ) {
+    fail("INVALID_GUESS", "Enter one word or phrase of 1–80 characters.");
   }
   return candidate as unknown as PartyAction;
 }
@@ -168,6 +211,10 @@ export function createParty(
 ): PartyState {
   return {
     id,
+    schemaVersion: PARTY_SCHEMA_VERSION,
+    gameId: crypto.randomUUID(),
+    hostRecoveryCode: makeRecoveryCode(),
+    notice: null,
     revision: 1,
     hostId: host.id,
     pin: validatePin(pin),
@@ -183,11 +230,12 @@ export function createParty(
     settings: validateSettings(settings),
     round: null,
     outcome: null,
-    usedWordIds: [],
     readyIds: [],
     clueIndex: 0,
     discussion: { deadline: null, remainingMs: 0 },
     expiresAt: now + PARTY_TTL_MS,
+    abandonedExpiresAt: now + ABANDONED_TTL_MS,
+    guessDeadline: null,
   };
 }
 
@@ -195,7 +243,7 @@ export function requireParty(
   state: PartyState | null,
   now: number,
 ): PartyState {
-  if (!state || state.expiresAt <= now) {
+  if (!state || isExpired(state, now)) {
     fail(
       "SESSION_ENDED",
       "This party has ended. Join or create a new party.",
@@ -220,8 +268,13 @@ export function publicInfo(
   state: PartyState | null,
   now: number,
 ): PartyPublicInfo {
-  return state && state.expiresAt > now
-    ? { exists: true, phase: state.phase, playerCount: state.players.length }
+  return state && !isExpired(state, now)
+    ? {
+        exists: true,
+        phase: state.phase,
+        playerCount: state.players.length,
+        abandonedExpiresAt: state.abandonedExpiresAt,
+      }
     : { exists: false };
 }
 
@@ -239,6 +292,223 @@ export function pinMatches(expected: string, supplied: string): boolean {
     mismatch |= expected.charCodeAt(index) ^ (supplied.charCodeAt(index) || 0);
   }
   return mismatch === 0;
+}
+
+export function makeRecoveryCode(): string {
+  const hex = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  )
+    .join("")
+    .toUpperCase();
+  return hex.match(/.{4}/g)!.join("-");
+}
+
+export function normalizeRecoveryCode(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const normalized = value.replace(/[\s-]/gu, "").toUpperCase();
+  return /^[A-F0-9]{32}$/.test(normalized) ? normalized : "";
+}
+
+function notice(message: string): NonNullable<PartyState["notice"]> {
+  return { id: crypto.randomUUID(), message };
+}
+
+export function recoverParty(
+  state: PartyState,
+  recoveryCode: unknown,
+  tokenHash: string,
+  now: number,
+): PartyState {
+  requireParty(state, now);
+  const supplied = normalizeRecoveryCode(recoveryCode);
+  if (
+    !supplied ||
+    !pinMatches(normalizeRecoveryCode(state.hostRecoveryCode), supplied)
+  ) {
+    fail(
+      "WRONG_RECOVERY_CODE",
+      "That private host recovery code is not correct.",
+      403,
+    );
+  }
+  return touch(
+    {
+      ...state,
+      players: state.players.map((player) =>
+        player.id === state.hostId ? { ...player, tokenHash } : player,
+      ),
+      hostRecoveryCode: makeRecoveryCode(),
+      notice: notice(
+        "The host recovered their seat. The previous host session has been signed out.",
+      ),
+    },
+    now,
+  );
+}
+
+export interface SocketIdentity {
+  partyId: string | null;
+  playerId: string | null;
+  tokenHash?: string | null;
+}
+
+/** A seat alone is not authentication: recovery revokes every socket using its old token. */
+export function socketIdentityMatches(
+  state: PartyState | null,
+  identity: SocketIdentity | null,
+): boolean {
+  return (
+    !!state &&
+    identity?.partyId === state.id &&
+    !!identity.tokenHash &&
+    state.players.some(
+      (player) =>
+        player.id === identity.playerId &&
+        player.tokenHash === identity.tokenHash,
+    )
+  );
+}
+
+export function isExpired(state: PartyState, now: number): boolean {
+  return (
+    state.expiresAt <= now ||
+    (state.abandonedExpiresAt !== null && state.abandonedExpiresAt <= now)
+  );
+}
+
+export function expirationMessage(state: PartyState): string {
+  return state.abandonedExpiresAt !== null &&
+    state.abandonedExpiresAt <= state.expiresAt
+    ? "This party ended after everyone was disconnected for 15 minutes. Join or create a new party."
+    : "This party expired after 12 hours without a game action. Join or create a new party.";
+}
+
+/** Presence is transport-owned, persisted, and never renews the state-change TTL. */
+export function updatePresence(
+  state: PartyState,
+  connected: ReadonlySet<string>,
+  now: number,
+): PartyState {
+  const anyConnected = state.players.some((player) => connected.has(player.id));
+  const deadline = anyConnected
+    ? null
+    : (state.abandonedExpiresAt ?? now + ABANDONED_TTL_MS);
+  return deadline === state.abandonedExpiresAt
+    ? state
+    : { ...state, abandonedExpiresAt: deadline };
+}
+
+export function nextAlarmDeadline(
+  state: PartyState | null,
+  unauthenticatedDeadlines: number[] = [],
+): number | null {
+  const deadline = Math.min(
+    ...unauthenticatedDeadlines,
+    state?.expiresAt ?? Infinity,
+    state?.abandonedExpiresAt ?? Infinity,
+    state?.guessDeadline ?? Infinity,
+  );
+  return Number.isFinite(deadline) ? deadline : null;
+}
+
+function finishRound(state: PartyState, outcome: Outcome): PartyState {
+  const scores = new Map(
+    applyAwards(state.players, outcome).map((player) => [
+      player.id,
+      player.score,
+    ]),
+  );
+  return {
+    ...state,
+    phase: "result",
+    outcome,
+    guessDeadline: null,
+    players: state.players.map((player) => ({
+      ...player,
+      score: scores.get(player.id)!,
+    })),
+  };
+}
+
+/** Used by alarms AND request entry points, so a delayed alarm cannot allow a late answer. */
+export function advanceTime(
+  state: PartyState | null,
+  now: number,
+): PartyState | null {
+  if (!state || isExpired(state, now)) return null;
+  if (
+    state.phase === "guess" &&
+    state.guessDeadline !== null &&
+    state.guessDeadline <= now
+  ) {
+    return touch(
+      finishRound(state, resolveLastChance(state.round!, state.players, null)),
+      now,
+    );
+  }
+  return state;
+}
+
+export function updateWordHistory(
+  previous: PartyState | null,
+  next: PartyState | null,
+  history: string[],
+): string[] {
+  if (
+    !next?.round ||
+    (previous?.gameId === next.gameId &&
+      previous.round?.number === next.round.number)
+  )
+    return history;
+  return rememberWord(history, next.round.word.id);
+}
+
+function validHistory(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value
+        .filter((id): id is string => typeof id === "string")
+        .slice(-RECENT_WORD_LIMIT)
+    : [];
+}
+
+/** One explicit persisted-v1 upgrade. It never resets a live round, credential hash, or identity. */
+export function migrateStoredParty(
+  value: unknown,
+  storedHistory: unknown,
+  now: number,
+): {
+  party: PartyState | null;
+  history: string[];
+  legacy: boolean;
+} {
+  const history = validHistory(storedHistory);
+  if (value === null) return { party: null, history, legacy: false };
+  const saved = object(value);
+  if (saved.schemaVersion === PARTY_SCHEMA_VERSION)
+    return { party: saved as unknown as PartyState, history, legacy: false };
+  if (saved.schemaVersion !== undefined && saved.schemaVersion !== 1)
+    throw new Error("Unsupported party schema.");
+  const settings = migrateSettings(saved.settings);
+  if (!settings) throw new Error("Invalid stored party settings.");
+  const { usedWordIds, ...retained } = saved;
+  const outcome = saved.outcome
+    ? { ...object(saved.outcome), guessResult: null }
+    : null;
+  return {
+    legacy: true,
+    history: validHistory([...history, ...validHistory(usedWordIds)]),
+    party: {
+      ...retained,
+      schemaVersion: PARTY_SCHEMA_VERSION,
+      gameId: crypto.randomUUID(),
+      hostRecoveryCode: makeRecoveryCode(),
+      settings,
+      outcome,
+      guessDeadline: null,
+      abandonedExpiresAt: now + ABANDONED_TTL_MS,
+      notice: null,
+    } as unknown as PartyState,
+  };
 }
 
 export function joinParty(
@@ -283,12 +553,13 @@ function beginRound(
   state: PartyState,
   number: number,
   random: () => number,
+  recentWordIds: string[],
 ): PartyState {
   const round = createRound(
     state.players,
     state.settings,
     number,
-    state.usedWordIds,
+    recentWordIds,
     random,
   );
   return {
@@ -296,7 +567,7 @@ function beginRound(
     phase: "role",
     round,
     outcome: null,
-    usedWordIds: [...state.usedWordIds, round.word.id],
+    guessDeadline: null,
     readyIds: [],
     clueIndex: 0,
     discussion: {
@@ -314,12 +585,23 @@ export function applyAction(
   now: number,
   connected: ReadonlySet<string>,
   random: () => number = Math.random,
+  options: {
+    recentWordIds?: string[];
+    freshHost?: { id: string; tokenHash: string };
+  } = {},
 ): PartyState | null {
   requireParty(state, now);
   if (!state.players.some((player) => player.id === actorId)) {
     fail("SESSION_ENDED", "This player session has ended.", 401);
   }
   const action = validateAction(input);
+  if (action.gameId !== state.gameId) {
+    fail(
+      "STALE_GAME",
+      "A new game has started. Use the current party state.",
+      409,
+    );
+  }
   if ("roundNumber" in action && state.round?.number !== action.roundNumber) {
     fail(
       "STALE_ROUND",
@@ -327,7 +609,13 @@ export function applyAction(
       409,
     );
   }
-  const playerActions = new Set(["ready", "vote", "leave", "next-clue"]);
+  const playerActions = new Set([
+    "ready",
+    "vote",
+    "leave",
+    "next-clue",
+    "guess-word",
+  ]);
   if (!playerActions.has(action.type) && actorId !== state.hostId) {
     fail("HOST_ONLY", "Only the host can do that.", 403);
   }
@@ -355,10 +643,11 @@ export function applyAction(
         {
           ...state,
           players: state.players.map((player) => ({ ...player, score: 0 })),
-          usedWordIds: [],
+          guessDeadline: null,
         },
         1,
         random,
+        options.recentWordIds ?? [],
       );
       break;
     }
@@ -384,7 +673,8 @@ export function applyAction(
         fail("STALE_CLUE", "That clue turn has already moved on.", 409);
       if (
         actorId !== state.hostId &&
-        state.round!.clueOrder[state.clueIndex] !== actorId
+        state.round!.clueOrder[state.clueIndex % state.players.length] !==
+          actorId
       ) {
         fail(
           "NOT_YOUR_TURN",
@@ -392,7 +682,10 @@ export function applyAction(
           403,
         );
       }
-      if (state.clueIndex + 1 === state.players.length) {
+      if (
+        state.clueIndex + 1 ===
+        state.players.length * state.settings.clueCycles
+      ) {
         next = {
           ...state,
           phase: "discussion",
@@ -456,44 +749,112 @@ export function applyAction(
         state.players.every((player) => Object.hasOwn(round.votes, player.id))
       ) {
         const outcome = resolveRound(round, state.players);
-        const awarded = new Map(
-          applyAwards(state.players, outcome).map((player) => [
-            player.id,
-            player.score,
-          ]),
-        );
-        next = {
-          ...next,
-          phase: "result",
-          outcome,
-          players: state.players.map((player) => ({
-            ...player,
-            score: awarded.get(player.id)!,
-          })),
-        };
+        next =
+          state.settings.lastChanceGuess && outcome.caught
+            ? {
+                ...next,
+                phase: "guess",
+                guessDeadline: now + LAST_CHANCE_SECONDS * 1000,
+              }
+            : finishRound(next, outcome);
       }
       break;
     }
+    case "guess-word":
+      requirePhase(state, "guess");
+      if (actorId !== state.round!.imposterId) {
+        fail(
+          "IMPOSTER_ONLY",
+          "Only the caught imposter can submit this guess.",
+          403,
+        );
+      }
+      next = finishRound(
+        state,
+        resolveLastChance(
+          state.round!,
+          state.players,
+          now >= state.guessDeadline! ? null : action.guess,
+        ),
+      );
+      break;
+    case "skip-guess":
+      requirePhase(state, "guess");
+      next = finishRound(
+        state,
+        resolveLastChance(state.round!, state.players, null),
+      );
+      break;
     case "next-round":
       requirePhase(state, "result");
       next =
         state.round!.number === state.settings.rounds
           ? { ...state, phase: "final" }
-          : beginRound(state, state.round!.number + 1, random);
+          : beginRound(
+              state,
+              state.round!.number + 1,
+              random,
+              options.recentWordIds ?? [],
+            );
       break;
-    case "back-to-lobby":
-      if (state.phase === "lobby")
-        fail("WRONG_PHASE", "The party is already in the lobby.", 409);
+    case "new-game":
       next = {
         ...state,
+        gameId: crypto.randomUUID(),
+        notice: notice(
+          "The host started a new game with the same players. Scores and rounds have been reset.",
+        ),
         phase: "lobby",
         players: state.players.map((player) => ({ ...player, score: 0 })),
         round: null,
         outcome: null,
-        usedWordIds: [],
+        guessDeadline: null,
         readyIds: [],
         clueIndex: 0,
         discussion: { deadline: null, remainingMs: 0 },
+      };
+      break;
+    case "fresh-party": {
+      if (pinMatches(state.pin, action.pin))
+        fail("PIN_UNCHANGED", "Choose a different PIN for the fresh party.");
+      if (!options.freshHost)
+        throw new Error("Fresh party requires a rotated session credential.");
+      const host = state.players.find((player) => player.id === actorId)!;
+      return createParty(
+        crypto.randomUUID(),
+        { ...options.freshHost, name: host.name },
+        action.pin,
+        state.settings,
+        now,
+      );
+    }
+    case "transfer-host": {
+      const target = state.players.find(
+        (player) => player.id === action.playerId,
+      );
+      if (!target)
+        fail("PLAYER_NOT_FOUND", "That player is no longer in the party.", 404);
+      if (target.id === state.hostId)
+        fail("ALREADY_HOST", "That player is already the host.", 409);
+      if (!connected.has(target.id))
+        fail(
+          "PLAYER_OFFLINE",
+          "Choose a connected player to host the party.",
+          409,
+        );
+      next = {
+        ...state,
+        hostId: target.id,
+        hostRecoveryCode: makeRecoveryCode(),
+        notice: notice(`${target.name} is now hosting the party.`),
+      };
+      break;
+    }
+    case "rotate-recovery":
+      next = {
+        ...state,
+        hostRecoveryCode: makeRecoveryCode(),
+        notice: notice("The host rotated the private recovery code."),
       };
       break;
     case "remove-player":
@@ -533,7 +894,7 @@ export function project(
   requireParty(state, now);
   if (!state.players.some((player) => player.id === selfId))
     fail("SESSION_ENDED", "This player session has ended.", 401);
-  const privatePhase = ["role", "clue", "discussion", "vote"].includes(
+  const privatePhase = ["role", "clue", "discussion", "vote", "guess"].includes(
     state.phase,
   );
   const publicResult =
@@ -544,13 +905,18 @@ export function project(
     state.phase === "final" ? rankPlayers(state.players) : state.players;
   return {
     id: state.id,
+    gameId: state.gameId,
     revision: state.revision,
     phase: state.phase,
     serverNow: now,
     expiresAt: state.expiresAt,
+    abandonedExpiresAt: state.abandonedExpiresAt,
+    notice: state.notice ? { ...state.notice } : null,
     selfId,
     hostId: state.hostId,
-    ...(selfId === state.hostId ? { pin: state.pin } : {}),
+    ...(selfId === state.hostId
+      ? { pin: state.pin, hostRecoveryCode: state.hostRecoveryCode }
+      : {}),
     players: players.map((player) => ({
       id: player.id,
       name: player.name,
@@ -563,6 +929,11 @@ export function project(
     roundNumber: state.round?.number ?? 0,
     clueOrder: state.round ? [...state.round.clueOrder] : [],
     clueIndex: state.clueIndex,
+    clueCycle: Math.floor(state.clueIndex / state.players.length) + 1,
+    guess:
+      state.phase === "guess" && state.round && state.guessDeadline !== null
+        ? { playerId: state.round.imposterId, deadline: state.guessDeadline }
+        : null,
     discussion: {
       deadline: state.discussion.deadline,
       remainingMs:

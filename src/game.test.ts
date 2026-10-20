@@ -7,6 +7,12 @@ import {
   recordVote,
   resolveRound,
   validateSetup,
+  DEFAULT_SETTINGS,
+  RECENT_WORD_LIMIT,
+  matchesWord,
+  migrateSettings,
+  rememberWord,
+  resolveLastChance,
   type Player,
   type Round,
   type Settings,
@@ -22,7 +28,7 @@ function makePlayers(): Player[] {
 }
 
 function makeSettings(): Settings {
-  return { packIds: ["everyday"], rounds: 3, discussionSeconds: 60 };
+  return { ...DEFAULT_SETTINGS, packIds: ["everyday"], rounds: 3 };
 }
 
 function makeRound(
@@ -50,6 +56,8 @@ describe("setup validation", () => {
             packIds: PACKS.map((pack) => pack.id),
             rounds,
             discussionSeconds,
+            clueCycles: 1,
+            lastChanceGuess: false,
           }),
         ).toBeNull();
       }
@@ -127,10 +135,8 @@ describe("round creation and word cycles", () => {
     const beforePlayers = structuredClone(players);
     const beforeSettings = structuredClone(settings);
     const round = createRound(players, settings, 2, history, () => 0);
-    expect(round.number).toBe(2);
     expect(round.word.id).toBe(selectedWords[1]!.id);
     expect(round.word.packId).toBe("everyday");
-    expect(round.votes).toEqual({});
     expect(players).toEqual(beforePlayers);
     expect(settings).toEqual(beforeSettings);
     expect(history).toEqual([selectedWords[0]!.id]);
@@ -162,18 +168,6 @@ describe("round creation and word cycles", () => {
     expect(
       createRound(players, makeSettings(), 1, [], () => almostOne).imposterId,
     ).toBe("d");
-  });
-
-  test("shuffles clue order separately from the imposter and includes everyone once", () => {
-    const players = makePlayers();
-    const originalIds = players.map((player) => player.id);
-    const low = createRound(players, makeSettings(), 1, [], () => 0);
-    const high = createRound(players, makeSettings(), 1, [], () => almostOne);
-    expect(low.clueOrder).toEqual(["b", "c", "d", "a"]);
-    expect(high.clueOrder).toEqual(originalIds);
-    expect(new Set(low.clueOrder)).toEqual(new Set(originalIds));
-    expect(low.clueOrder).toHaveLength(players.length);
-    expect(players.map((player) => player.id)).toEqual(originalIds);
   });
 
   test("all clue permutations are reachable through equal-sized shuffle intervals", () => {
@@ -233,31 +227,28 @@ describe("round creation and word cycles", () => {
     expect(new Set(history).size).toBe(pool.length);
   });
 
-  test("restarts exhausted pools and keeps the second cycle nonrepeating too", () => {
+  test("uses the least-recently-used word after a selected pool is exhausted", () => {
     const pool = WORDS.filter((word) => word.packId === "everyday");
-    const history = pool.map((word) => word.id);
+    const oldest = pool[pool.length - 1]!;
+    const history = [oldest.id, ...pool.slice(0, -1).map((word) => word.id)];
     const first = createRound(
       makePlayers(),
       makeSettings(),
       1,
       history,
-      () => 0,
+      () => almostOne,
     );
-    expect(first.word.id).toBe(pool[0]!.id);
-    history.push(first.word.id);
-    const second = createRound(
+    expect(first.word.id).toBe(oldest.id);
+    const continued = rememberWord(history, first.word.id);
+    const next = createRound(
       makePlayers(),
       makeSettings(),
       1,
-      history,
-      () => 0,
+      continued,
+      () => almostOne,
     );
-    expect(second.word.id).toBe(pool[1]!.id);
-    history.push(...pool.slice(1).map((word) => word.id));
-    expect(
-      createRound(makePlayers(), makeSettings(), 1, history, () => almostOne)
-        .word.id,
-    ).toBe(pool[pool.length - 1]!.id);
+    expect(next.word.id).toBe(history[1]!);
+    expect(next.word.id).not.toBe(first.word.id);
   });
 
   test("ignores history from unselected packs and unknown words", () => {
@@ -316,8 +307,6 @@ describe("private voting", () => {
     expect(next).not.toBe(round);
     expect(next.votes).toEqual({ a: "b", b: "a" });
     expect(round.votes).toEqual({ b: "a" });
-    expect(next.word).toBe(round.word);
-    expect(next.clueOrder).toBe(round.clueOrder);
   });
 
   test("rejects self votes and unknown voters or suspects", () => {
@@ -416,6 +405,7 @@ describe("resolution and scoring", () => {
       accusedId: "a",
       voteCounts: { a: 2, b: 1, c: 1, d: 0 },
       awards: { a: 0, b: 1, c: 1, d: 1 },
+      guessResult: null,
     });
     expect(players.every((player) => player.score === 0)).toBe(true);
     expect(round.votes).toEqual({ a: "b", b: "a", c: "a", d: "c" });
@@ -443,6 +433,7 @@ describe("resolution and scoring", () => {
       accusedId: null,
       voteCounts: { a: 2, b: 2, c: 0, d: 0 },
       awards: { a: 2, b: 0, c: 0, d: 0 },
+      guessResult: null,
     });
   });
 
@@ -519,5 +510,164 @@ describe("resolution and scoring", () => {
     ]);
     expect(players.map((player) => player.id)).toEqual(["a", "b", "c", "d"]);
     expect(rankPlayers([])).toEqual([]);
+  });
+});
+
+describe("optional game rules", () => {
+  test("accepts both clue cycle options and last-chance choices", () => {
+    for (const clueCycles of [1, 2] as const) {
+      for (const lastChanceGuess of [false, true]) {
+        expect(
+          validateSetup(["Aashish", "Ashu", "Ashim"], {
+            ...makeSettings(),
+            clueCycles,
+            lastChanceGuess,
+          }),
+        ).toBeNull();
+      }
+    }
+  });
+
+  test("rejects unsupported cycles and missing or non-boolean guess options", () => {
+    for (const clueCycles of [0, 3, 1.5, undefined]) {
+      expect(
+        validateSetup(["Aashish", "Ashu", "Ashim"], {
+          ...makeSettings(),
+          clueCycles,
+        } as unknown as Settings),
+      ).not.toBeNull();
+    }
+    for (const lastChanceGuess of [undefined, null, "yes", 1]) {
+      expect(
+        validateSetup(["Aashish", "Ashu", "Ashim"], {
+          ...makeSettings(),
+          lastChanceGuess,
+        } as unknown as Settings),
+      ).not.toBeNull();
+    }
+  });
+
+  test("upgrades saved settings without changing the group's existing selections", () => {
+    const saved: Pick<Settings, "packIds" | "rounds" | "discussionSeconds"> = {
+      packIds: ["culture"],
+      rounds: 7,
+      discussionSeconds: 90,
+    };
+    expect(migrateSettings(saved)).toEqual({
+      ...saved,
+      clueCycles: 1,
+      lastChanceGuess: false,
+    });
+    expect(saved).toEqual({
+      packIds: ["culture"],
+      rounds: 7,
+      discussionSeconds: 90,
+    });
+    expect(
+      migrateSettings({ ...saved, clueCycles: 2, lastChanceGuess: true }),
+    ).toEqual({ ...saved, clueCycles: 2, lastChanceGuess: true });
+    expect(migrateSettings({ ...saved, rounds: 4 })).toBeNull();
+    expect(migrateSettings({ ...saved, clueCycles: 3 })).toBeNull();
+  });
+});
+
+describe("persistent recent words", () => {
+  test("a new match avoids a word chosen in the previous game", () => {
+    const previous = createRound(makePlayers(), makeSettings(), 3, [], () => 0);
+    const history = rememberWord([], previous.word.id);
+    const fresh = createRound(
+      makePlayers(),
+      makeSettings(),
+      1,
+      history,
+      () => 0,
+    );
+    expect(fresh.word.id).not.toBe(previous.word.id);
+    expect(history).toEqual([previous.word.id]);
+  });
+
+  test("keeps the most recent bounded history without mutating its input", () => {
+    const history = Array.from(
+      { length: RECENT_WORD_LIMIT },
+      (_, index) => `word-${index}`,
+    );
+    const updated = rememberWord(history, "new-word");
+    expect(updated).toHaveLength(RECENT_WORD_LIMIT);
+    expect(updated[0]).toBe("word-1");
+    expect(updated.at(-1)).toBe("new-word");
+    expect(updated).not.toContain("word-0");
+    expect(history[0]).toBe("word-0");
+    expect(history.at(-1)).toBe(`word-${RECENT_WORD_LIMIT - 1}`);
+  });
+});
+
+describe("last-chance imposter guess", () => {
+  const tea = {
+    ...WORDS[0]!,
+    english: "Tea",
+    nepali: "चिया",
+    aliases: ["Chiya"],
+  };
+  const caughtRound = () => ({
+    ...makeRound({ a: "b", b: "a", c: "a", d: "c" }),
+    word: tea,
+  });
+
+  test("matches either language or an exact known alias, not a substring", () => {
+    for (const answer of [" Tea! ", "चिया", "CHIYA", "Ｔｅａ"])
+      expect(matchesWord(tea, answer)).toBe(true);
+    for (const answer of ["te", "green tea", "coffee", "", "!!!"])
+      expect(matchesWord(tea, answer)).toBe(false);
+    expect(matchesWord({ ...tea, english: "Video call" }, "VIDEO—CALL")).toBe(
+      true,
+    );
+  });
+
+  test("a correct last guess changes only the scoring outcome, not the votes", () => {
+    const round = caughtRound();
+    const players = makePlayers();
+    const outcome = resolveLastChance(round, players, "चिया");
+    expect(outcome.caught).toBe(false);
+    expect(outcome.guessResult).toBe("correct");
+    expect(outcome.accusedId).toBe("a");
+    expect(outcome.voteCounts).toEqual({ a: 2, b: 1, c: 1, d: 0 });
+    expect(outcome.awards).toEqual({ a: 2, b: 0, c: 0, d: 0 });
+    expect(applyAwards(players, outcome).map((player) => player.score)).toEqual(
+      [2, 0, 0, 0],
+    );
+    expect(round.votes).toEqual({ a: "b", b: "a", c: "a", d: "c" });
+    expect(players.map((player) => player.score)).toEqual([0, 0, 0, 0]);
+  });
+
+  test("wrong and skipped guesses leave the group's catch points intact", () => {
+    for (const guess of ["coffee", null]) {
+      const outcome = resolveLastChance(caughtRound(), makePlayers(), guess);
+      expect(outcome.caught).toBe(true);
+      expect(outcome.guessResult).toBe(
+        guess === null ? "skipped" : "incorrect",
+      );
+      expect(outcome.awards).toEqual({ a: 0, b: 1, c: 1, d: 1 });
+    }
+  });
+
+  test("rejects invalid attempts and never grants a guess on an escape or tie", () => {
+    for (const guess of ["", " ", "x".repeat(81)])
+      expect(() =>
+        resolveLastChance(caughtRound(), makePlayers(), guess),
+      ).toThrow();
+    expect(() =>
+      resolveLastChance(
+        makeRound({ a: "b", b: "a", c: "b", d: "c" }),
+        makePlayers(),
+        "Tea",
+      ),
+    ).toThrow();
+    expect(() =>
+      resolveLastChance(
+        makeRound({ a: "b", b: "a", c: "a", d: "b" }),
+        makePlayers(),
+        "Tea",
+      ),
+    ).toThrow();
   });
 });

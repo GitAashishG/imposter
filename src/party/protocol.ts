@@ -2,7 +2,14 @@ import type { Word } from "../data";
 import type { Outcome, Player, Settings } from "../game";
 
 export type PartyPhase =
-  "lobby" | "role" | "clue" | "discussion" | "vote" | "result" | "final";
+  | "lobby"
+  | "role"
+  | "clue"
+  | "discussion"
+  | "vote"
+  | "guess"
+  | "result"
+  | "final";
 
 export interface PartyPlayer extends Player {
   ready: boolean;
@@ -15,22 +22,30 @@ export type PrivateRole =
 
 export interface PartySnapshot {
   id: string;
+  gameId: string;
   revision: number;
   phase: PartyPhase;
   serverNow: number;
   expiresAt: number;
+  abandonedExpiresAt: number | null;
+  notice: { id: string; message: string } | null;
   selfId: string;
   hostId: string;
   /** Only included in the host's private snapshot. */
   pin?: string;
+  /** Private host credential; never included for another player. */
+  hostRecoveryCode?: string;
   players: PartyPlayer[];
   settings: Settings;
   roundNumber: number;
   clueOrder: string[];
   clueIndex: number;
+  clueCycle: number;
   discussion: { deadline: number | null; remainingMs: number };
   /** Only the receiving player's role; never another player's assignment. */
   ownRole: PrivateRole | null;
+  /** Word remains private until this optional challenge is resolved. */
+  guess: { playerId: string; deadline: number } | null;
   /** Public only after all votes are locked in. No individual ballots. */
   result: { word: Word; imposterId: string; outcome: Outcome } | null;
 }
@@ -45,6 +60,7 @@ export interface PartyPublicInfo {
   exists: boolean;
   phase?: PartyPhase;
   playerCount?: number;
+  abandonedExpiresAt?: number | null;
 }
 
 export interface PartyEntry {
@@ -52,7 +68,7 @@ export interface PartyEntry {
   snapshot: PartySnapshot;
 }
 
-export type PartyAction =
+export type PartyCommand =
   | { type: "settings"; settings: Settings }
   | { type: "start" }
   | { type: "ready"; roundNumber: number }
@@ -62,16 +78,30 @@ export type PartyAction =
   | { type: "resume-timer"; roundNumber: number }
   | { type: "start-vote"; roundNumber: number }
   | { type: "vote"; roundNumber: number; suspectId: string }
+  | { type: "guess-word"; roundNumber: number; guess: string }
+  | { type: "skip-guess"; roundNumber: number }
   | { type: "next-round"; roundNumber: number }
-  | { type: "back-to-lobby" }
+  | { type: "new-game" }
+  | { type: "fresh-party"; pin: string }
+  | { type: "transfer-host"; playerId: string }
+  | { type: "rotate-recovery" }
   | { type: "remove-player"; playerId: string }
   | { type: "leave" }
   | { type: "end-party" };
 
+/** Captured by the UI with the game being acted on, not inferred at receipt. */
+export type PartyAction = PartyCommand & { gameId: string };
+
+export interface PartyActionResponse {
+  snapshot: PartySnapshot | null;
+  /** A fresh party rotates the acting host's session too. */
+  session?: PartySession;
+}
+
 export type PartyEvent =
   | { type: "snapshot"; snapshot: PartySnapshot }
   | { type: "error"; error: string; code: string }
-  | { type: "ended"; message: string };
+  | { type: "ended"; partyId: string | null; message: string };
 
 export interface PartyErrorBody {
   error: string;
