@@ -47,6 +47,10 @@
   flex: 1;
   min-width: 0;
 }
+/* Phase changes focus this landmark for screen readers, not as a control. */
+.party-main:focus {
+  outline: none;
+}
 .party-card {
   min-width: 0;
   padding: 32px;
