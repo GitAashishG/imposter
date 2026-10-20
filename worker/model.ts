@@ -1,0 +1,587 @@
+import {
+  applyAwards,
+  createRound,
+  rankPlayers,
+  recordVote,
+  resolveRound,
+  validateSetup,
+  type Outcome,
+  type Player,
+  type Round,
+  type Settings,
+} from "../src/game";
+import type {
+  PartyAction,
+  PartyPhase,
+  PartyPublicInfo,
+  PartySnapshot,
+} from "../src/party/protocol";
+
+export const PARTY_TTL_MS = 12 * 60 * 60 * 1000;
+
+export class PartyError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly status = 400,
+  ) {
+    super(message);
+    this.name = "PartyError";
+  }
+}
+
+export interface Member extends Player {
+  tokenHash: string;
+}
+
+/** Server-only. Never serialize this object to a client. */
+export interface PartyState {
+  id: string;
+  revision: number;
+  hostId: string;
+  pin: string;
+  phase: PartyPhase;
+  players: Member[];
+  settings: Settings;
+  round: Round | null;
+  outcome: Outcome | null;
+  usedWordIds: string[];
+  readyIds: string[];
+  clueIndex: number;
+  discussion: { deadline: number | null; remainingMs: number };
+  expiresAt: number;
+}
+
+function fail(code: string, message: string, status = 400): never {
+  throw new PartyError(code, message, status);
+}
+
+export function object(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    fail("INVALID_BODY", "Expected a JSON object.");
+  }
+  return value as Record<string, unknown>;
+}
+
+export function exactKeys(
+  value: Record<string, unknown>,
+  keys: string[],
+): void {
+  if (Object.keys(value).some((key) => !keys.includes(key))) {
+    fail("INVALID_BODY", "The request contains an unknown field.");
+  }
+}
+
+export function validateName(value: unknown): string {
+  if (typeof value !== "string" || !value.trim() || value.trim().length > 24) {
+    fail("INVALID_NAME", "Choose a name between 1 and 24 characters.");
+  }
+  const name = value.trim();
+  if (/[\u0000-\u001f\u007f]/u.test(name)) {
+    fail("INVALID_NAME", "Names cannot contain control characters.");
+  }
+  return name;
+}
+
+export function validatePin(value: unknown): string {
+  if (typeof value !== "string" || !/^\d{6}$/.test(value)) {
+    fail("INVALID_PIN", "Use a six-digit party PIN.");
+  }
+  return value;
+}
+
+export function validateSettings(value: unknown): Settings {
+  const candidate = object(value);
+  exactKeys(candidate, ["packIds", "rounds", "discussionSeconds"]);
+  const settings = candidate as unknown as Settings;
+  const error = validateSetup(["First", "Second", "Third"], settings);
+  if (error) fail("INVALID_SETTINGS", error);
+  if (new Set(settings.packIds).size !== settings.packIds.length) {
+    fail("INVALID_SETTINGS", "Choose each word pack only once.");
+  }
+  return { ...settings, packIds: [...settings.packIds] };
+}
+
+export function validateAction(value: unknown): PartyAction {
+  const candidate = object(value);
+  const fields: Record<string, string[]> = {
+    settings: ["settings"],
+    start: [],
+    ready: ["roundNumber"],
+    "start-clues": ["roundNumber"],
+    "next-clue": ["roundNumber", "clueIndex"],
+    "pause-timer": ["roundNumber"],
+    "resume-timer": ["roundNumber"],
+    "start-vote": ["roundNumber"],
+    vote: ["roundNumber", "suspectId"],
+    "next-round": ["roundNumber"],
+    "back-to-lobby": [],
+    "remove-player": ["playerId"],
+    leave: [],
+    "end-party": [],
+  };
+  if (
+    typeof candidate.type !== "string" ||
+    !Object.hasOwn(fields, candidate.type)
+  ) {
+    fail("UNKNOWN_ACTION", "That party command is not supported.");
+  }
+  const required = fields[candidate.type]!;
+  exactKeys(candidate, ["type", ...required]);
+  if (required.some((key) => !Object.hasOwn(candidate, key))) {
+    fail("INVALID_ACTION", "The command is missing a required field.");
+  }
+  if (
+    "roundNumber" in candidate &&
+    (!Number.isSafeInteger(candidate.roundNumber) ||
+      Number(candidate.roundNumber) < 1)
+  ) {
+    fail("INVALID_ACTION", "A current round number is required.");
+  }
+  if (
+    "clueIndex" in candidate &&
+    (!Number.isSafeInteger(candidate.clueIndex) ||
+      Number(candidate.clueIndex) < 0)
+  ) {
+    fail("INVALID_ACTION", "A current clue index is required.");
+  }
+  for (const key of ["playerId", "suspectId"] as const) {
+    if (
+      key in candidate &&
+      (typeof candidate[key] !== "string" || !candidate[key])
+    ) {
+      fail("INVALID_ACTION", "A player ID is required.");
+    }
+  }
+  if (candidate.type === "settings") {
+    return { type: "settings", settings: validateSettings(candidate.settings) };
+  }
+  return candidate as unknown as PartyAction;
+}
+
+export function createParty(
+  id: string,
+  host: { id: string; name: unknown; tokenHash: string },
+  pin: unknown,
+  settings: unknown,
+  now: number,
+): PartyState {
+  return {
+    id,
+    revision: 1,
+    hostId: host.id,
+    pin: validatePin(pin),
+    phase: "lobby",
+    players: [
+      {
+        id: host.id,
+        name: validateName(host.name),
+        score: 0,
+        tokenHash: host.tokenHash,
+      },
+    ],
+    settings: validateSettings(settings),
+    round: null,
+    outcome: null,
+    usedWordIds: [],
+    readyIds: [],
+    clueIndex: 0,
+    discussion: { deadline: null, remainingMs: 0 },
+    expiresAt: now + PARTY_TTL_MS,
+  };
+}
+
+export function requireParty(
+  state: PartyState | null,
+  now: number,
+): PartyState {
+  if (!state || state.expiresAt <= now) {
+    fail(
+      "SESSION_ENDED",
+      "This party has ended. Join or create a new party.",
+      401,
+    );
+  }
+  return state;
+}
+
+export function authenticate(
+  state: PartyState | null,
+  tokenHash: string,
+  now: number,
+): string {
+  const party = requireParty(state, now);
+  const player = party.players.find((member) => member.tokenHash === tokenHash);
+  if (!player) fail("SESSION_ENDED", "This player session has ended.", 401);
+  return player.id;
+}
+
+export function publicInfo(
+  state: PartyState | null,
+  now: number,
+): PartyPublicInfo {
+  return state && state.expiresAt > now
+    ? { exists: true, phase: state.phase, playerCount: state.players.length }
+    : { exists: false };
+}
+
+function touch(state: PartyState, now: number): PartyState {
+  return {
+    ...state,
+    revision: state.revision + 1,
+    expiresAt: now + PARTY_TTL_MS,
+  };
+}
+
+export function pinMatches(expected: string, supplied: string): boolean {
+  let mismatch = expected.length ^ supplied.length;
+  for (let index = 0; index < expected.length; index += 1) {
+    mismatch |= expected.charCodeAt(index) ^ (supplied.charCodeAt(index) || 0);
+  }
+  return mismatch === 0;
+}
+
+export function joinParty(
+  state: PartyState,
+  member: { id: string; name: unknown; tokenHash: string },
+  pin: unknown,
+  now: number,
+): PartyState {
+  requireParty(state, now);
+  if (state.phase !== "lobby")
+    fail("NOT_IN_LOBBY", "Wait for the host to return to the lobby.", 409);
+  if (!pinMatches(state.pin, validatePin(pin)))
+    fail("WRONG_PIN", "That party PIN is not correct.", 403);
+  const name = validateName(member.name);
+  if (state.players.length >= 12)
+    fail("PARTY_FULL", "This party already has 12 players.", 409);
+  if (
+    state.players.some(
+      (player) => player.name.toLowerCase() === name.toLowerCase(),
+    )
+  ) {
+    fail("NAME_TAKEN", "That name is already in this party.", 409);
+  }
+  return touch(
+    {
+      ...state,
+      players: [
+        ...state.players,
+        { id: member.id, name, score: 0, tokenHash: member.tokenHash },
+      ],
+    },
+    now,
+  );
+}
+
+function requirePhase(state: PartyState, phase: PartyPhase): void {
+  if (state.phase !== phase)
+    fail("WRONG_PHASE", `This command is only available during ${phase}.`, 409);
+}
+
+function beginRound(
+  state: PartyState,
+  number: number,
+  random: () => number,
+): PartyState {
+  const round = createRound(
+    state.players,
+    state.settings,
+    number,
+    state.usedWordIds,
+    random,
+  );
+  return {
+    ...state,
+    phase: "role",
+    round,
+    outcome: null,
+    usedWordIds: [...state.usedWordIds, round.word.id],
+    readyIds: [],
+    clueIndex: 0,
+    discussion: {
+      deadline: null,
+      remainingMs: state.settings.discussionSeconds * 1000,
+    },
+  };
+}
+
+/** Immutable transitions. Identity is established by token authentication, not browser IDs. */
+export function applyAction(
+  state: PartyState,
+  actorId: string,
+  input: unknown,
+  now: number,
+  connected: ReadonlySet<string>,
+  random: () => number = Math.random,
+): PartyState | null {
+  requireParty(state, now);
+  if (!state.players.some((player) => player.id === actorId)) {
+    fail("SESSION_ENDED", "This player session has ended.", 401);
+  }
+  const action = validateAction(input);
+  if ("roundNumber" in action && state.round?.number !== action.roundNumber) {
+    fail(
+      "STALE_ROUND",
+      "The round has changed. Use the current party state.",
+      409,
+    );
+  }
+  const playerActions = new Set(["ready", "vote", "leave", "next-clue"]);
+  if (!playerActions.has(action.type) && actorId !== state.hostId) {
+    fail("HOST_ONLY", "Only the host can do that.", 403);
+  }
+  let next: PartyState;
+  switch (action.type) {
+    case "settings":
+      requirePhase(state, "lobby");
+      next = { ...state, settings: action.settings };
+      break;
+    case "start": {
+      requirePhase(state, "lobby");
+      const error = validateSetup(
+        state.players.map((player) => player.name),
+        state.settings,
+      );
+      if (error) fail("INVALID_SETUP", error);
+      if (state.players.some((player) => !connected.has(player.id))) {
+        fail(
+          "PLAYERS_OFFLINE",
+          "Every player must be connected before starting.",
+          409,
+        );
+      }
+      next = beginRound(
+        {
+          ...state,
+          players: state.players.map((player) => ({ ...player, score: 0 })),
+          usedWordIds: [],
+        },
+        1,
+        random,
+      );
+      break;
+    }
+    case "ready":
+      requirePhase(state, "role");
+      if (state.readyIds.includes(actorId)) return state;
+      next = { ...state, readyIds: [...state.readyIds, actorId] };
+      break;
+    case "start-clues":
+      requirePhase(state, "role");
+      if (state.players.some((player) => !state.readyIds.includes(player.id))) {
+        fail(
+          "PLAYERS_NOT_READY",
+          "Every player must acknowledge their role first.",
+          409,
+        );
+      }
+      next = { ...state, phase: "clue" };
+      break;
+    case "next-clue":
+      requirePhase(state, "clue");
+      if (action.clueIndex !== state.clueIndex)
+        fail("STALE_CLUE", "That clue turn has already moved on.", 409);
+      if (
+        actorId !== state.hostId &&
+        state.round!.clueOrder[state.clueIndex] !== actorId
+      ) {
+        fail(
+          "NOT_YOUR_TURN",
+          "Only the current clue player or host can advance this turn.",
+          403,
+        );
+      }
+      if (state.clueIndex + 1 === state.players.length) {
+        next = {
+          ...state,
+          phase: "discussion",
+          discussion: {
+            deadline: now + state.discussion.remainingMs,
+            remainingMs: state.discussion.remainingMs,
+          },
+        };
+      } else {
+        next = { ...state, clueIndex: state.clueIndex + 1 };
+      }
+      break;
+    case "pause-timer":
+      requirePhase(state, "discussion");
+      if (state.discussion.deadline === null) return state;
+      next = {
+        ...state,
+        discussion: {
+          deadline: null,
+          remainingMs: Math.max(0, state.discussion.deadline - now),
+        },
+      };
+      break;
+    case "resume-timer":
+      requirePhase(state, "discussion");
+      if (state.discussion.deadline !== null) return state;
+      next = {
+        ...state,
+        discussion: {
+          deadline: now + state.discussion.remainingMs,
+          remainingMs: state.discussion.remainingMs,
+        },
+      };
+      break;
+    case "start-vote":
+      requirePhase(state, "discussion");
+      next = {
+        ...state,
+        phase: "vote",
+        discussion: { deadline: null, remainingMs: 0 },
+      };
+      break;
+    case "vote": {
+      requirePhase(state, "vote");
+      if (Object.hasOwn(state.round!.votes, actorId))
+        fail("ALREADY_VOTED", "Your vote is already locked in.", 409);
+      if (
+        actorId === action.suspectId ||
+        !state.players.some((player) => player.id === action.suspectId)
+      ) {
+        fail("INVALID_VOTE", "Choose another player from this party.");
+      }
+      const round = recordVote(
+        state.round!,
+        state.players,
+        actorId,
+        action.suspectId,
+      );
+      next = { ...state, round };
+      if (
+        state.players.every((player) => Object.hasOwn(round.votes, player.id))
+      ) {
+        const outcome = resolveRound(round, state.players);
+        const awarded = new Map(
+          applyAwards(state.players, outcome).map((player) => [
+            player.id,
+            player.score,
+          ]),
+        );
+        next = {
+          ...next,
+          phase: "result",
+          outcome,
+          players: state.players.map((player) => ({
+            ...player,
+            score: awarded.get(player.id)!,
+          })),
+        };
+      }
+      break;
+    }
+    case "next-round":
+      requirePhase(state, "result");
+      next =
+        state.round!.number === state.settings.rounds
+          ? { ...state, phase: "final" }
+          : beginRound(state, state.round!.number + 1, random);
+      break;
+    case "back-to-lobby":
+      if (state.phase === "lobby")
+        fail("WRONG_PHASE", "The party is already in the lobby.", 409);
+      next = {
+        ...state,
+        phase: "lobby",
+        players: state.players.map((player) => ({ ...player, score: 0 })),
+        round: null,
+        outcome: null,
+        usedWordIds: [],
+        readyIds: [],
+        clueIndex: 0,
+        discussion: { deadline: null, remainingMs: 0 },
+      };
+      break;
+    case "remove-player":
+      requirePhase(state, "lobby");
+      if (action.playerId === state.hostId)
+        fail("CANNOT_REMOVE_HOST", "The host cannot remove themselves.");
+      if (!state.players.some((player) => player.id === action.playerId))
+        fail("PLAYER_NOT_FOUND", "That player is no longer in the party.", 404);
+      next = {
+        ...state,
+        players: state.players.filter(
+          (player) => player.id !== action.playerId,
+        ),
+      };
+      break;
+    case "leave":
+      requirePhase(state, "lobby");
+      if (actorId === state.hostId)
+        fail("HOST_CANNOT_LEAVE", "The host must end the party instead.");
+      next = {
+        ...state,
+        players: state.players.filter((player) => player.id !== actorId),
+      };
+      break;
+    case "end-party":
+      return null;
+  }
+  return touch(next, now);
+}
+
+export function project(
+  state: PartyState,
+  selfId: string,
+  now: number,
+  connected: ReadonlySet<string>,
+): PartySnapshot {
+  requireParty(state, now);
+  if (!state.players.some((player) => player.id === selfId))
+    fail("SESSION_ENDED", "This player session has ended.", 401);
+  const privatePhase = ["role", "clue", "discussion", "vote"].includes(
+    state.phase,
+  );
+  const publicResult =
+    (state.phase === "result" || state.phase === "final") &&
+    state.round &&
+    state.outcome;
+  const players =
+    state.phase === "final" ? rankPlayers(state.players) : state.players;
+  return {
+    id: state.id,
+    revision: state.revision,
+    phase: state.phase,
+    serverNow: now,
+    expiresAt: state.expiresAt,
+    selfId,
+    hostId: state.hostId,
+    ...(selfId === state.hostId ? { pin: state.pin } : {}),
+    players: players.map((player) => ({
+      id: player.id,
+      name: player.name,
+      score: player.score,
+      ready: state.readyIds.includes(player.id),
+      hasVoted: !!state.round && Object.hasOwn(state.round.votes, player.id),
+      connected: connected.has(player.id),
+    })),
+    settings: { ...state.settings, packIds: [...state.settings.packIds] },
+    roundNumber: state.round?.number ?? 0,
+    clueOrder: state.round ? [...state.round.clueOrder] : [],
+    clueIndex: state.clueIndex,
+    discussion: {
+      deadline: state.discussion.deadline,
+      remainingMs:
+        state.discussion.deadline === null
+          ? state.discussion.remainingMs
+          : Math.max(0, state.discussion.deadline - now),
+    },
+    ownRole:
+      privatePhase && state.round
+        ? state.round.imposterId === selfId
+          ? { isImposter: true, word: null }
+          : { isImposter: false, word: { ...state.round.word } }
+        : null,
+    result: publicResult
+      ? {
+          word: { ...state.round!.word },
+          imposterId: state.round!.imposterId,
+          outcome: structuredClone(state.outcome!),
+        }
+      : null,
+  };
+}

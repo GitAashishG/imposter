@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ko-ho-party",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-10-19",
+  "workers_dev": true,
+  "observability": { "enabled": false },
+  "vars": {
+    "ALLOWED_ORIGINS": "https://gitaashishg.github.io,http://localhost:5173,http://localhost:5174,http://localhost:4174",
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "PARTY", "class_name": "PartyRoom" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PartyRoom"] }],
+}

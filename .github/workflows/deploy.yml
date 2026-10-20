@@ -35,6 +35,8 @@ jobs:
 
       - name: Build for the repository URL
         run: npm run build -- --base="/${{ github.event.repository.name }}/"
+        env:
+          VITE_PARTY_API_URL: ${{ vars.VITE_PARTY_API_URL }}
 
       - name: Configure Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6

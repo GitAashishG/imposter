@@ -4,6 +4,7 @@ import {
   CircleHelp,
   RotateCcw,
   ShieldCheck,
+  Smartphone,
   Trophy,
 } from "lucide-react";
 import Setup, { loadPreferences, savePreferences } from "./Setup";
@@ -21,7 +22,7 @@ import {
 } from "./GameScreen";
 import { useGame } from "./useGame";
 
-export default function App() {
+export default function App({ onParty }: { onParty: () => void }) {
   const [state, dispatch] = useGame();
   const [preferences, setPreferences] = useState(loadPreferences);
   const [modal, setModal] = useState<"rules" | "scores" | "reset" | null>(null);
@@ -77,6 +78,12 @@ export default function App() {
           </span>
         </div>
         <div className="header-actions">
+          {!playing && (
+            <button className="header-button" onClick={onParty}>
+              <Smartphone size={17} />
+              <span>Own phones</span>
+            </button>
+          )}
           {playing && (
             <button
               className="header-button"

@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && tsc -p worker/tsconfig.json --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "test": "bun test"
+    "test": "bun test",
+    "worker:dev": "wrangler dev --port 8787",
+    "worker:deploy": "wrangler deploy"
   },
   "dependencies": {
     "@fontsource-variable/dm-sans": "^5.2.6",
@@ -18,11 +20,13 @@
     "react-dom": "^19.1.1"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261019.1",
     "@types/bun": "^1.2.22",
     "@types/react": "^19.1.13",
     "@types/react-dom": "^19.1.9",
     "@vitejs/plugin-react": "^5.0.3",
     "typescript": "^5.9.2",
-    "vite": "^7.1.7"
+    "vite": "^7.1.7",
+    "wrangler": "^4.151.2"
   }
 }
