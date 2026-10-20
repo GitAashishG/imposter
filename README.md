@@ -111,6 +111,7 @@ A cryptographically random device token is saved in this browser’s local stora
 - `src/game.test.ts`: behavioral rule tests
 - `src/useGame.ts`: local-only match transitions
 - `src/Setup.tsx`: roster and settings
+- `src/playerNames.ts`: sample roster and join-name suggestions; saved player names are not overwritten
 - `src/GameScreen.tsx`: private handoffs through final results
 - `src/components.tsx`: shared controls, dialogs, rules, scoreboard
 - `src/App.tsx`: Pass & Play shell and privacy events

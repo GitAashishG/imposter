@@ -18,13 +18,14 @@ import type { PackId } from "./data";
 import { validateSetup } from "./game";
 import type { Settings } from "./game";
 import { Eyes, PrimaryButton } from "./components";
+import { SUGGESTED_PLAYER_NAMES } from "./playerNames";
 
 export interface Preferences {
   names: string[];
   settings: Settings;
 }
 const DEFAULTS: Preferences = {
-  names: ["Player 1", "Player 2", "Player 3", "Player 4"],
+  names: SUGGESTED_PLAYER_NAMES.slice(0, 4),
   settings: {
     packIds: ["everyday", "culture", "diaspora", "classic"],
     rounds: 5,
@@ -237,9 +238,12 @@ export default function Setup({
                 const used = new Set(
                   names.map((name) => name.trim().toLowerCase()),
                 );
+                const suggestion = SUGGESTED_PLAYER_NAMES.find(
+                  (name) => !used.has(name.toLowerCase()),
+                );
                 let n = names.length + 1;
                 while (used.has(`player ${n}`)) n++;
-                setNames([...names, `Player ${n}`]);
+                setNames([...names, suggestion ?? `Player ${n}`]);
                 setError(null);
               }}
             >

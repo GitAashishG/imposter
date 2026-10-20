@@ -19,6 +19,7 @@ import { Eyes, PrimaryButton, Scoreboard } from "../components";
 import { PACKS } from "../data";
 import type { Settings } from "../game";
 import { rankPlayers } from "../game";
+import { SUGGESTED_PLAYER_NAMES } from "../playerNames";
 import type {
   PartyAction,
   PartyPlayer,
@@ -282,6 +283,8 @@ export function PartyEntry({
             Your name
             <input
               id="party-name"
+              placeholder={`e.g. ${SUGGESTED_PLAYER_NAMES[0]}`}
+              list="party-name-suggestions"
               value={name}
               autoComplete="nickname"
               maxLength={24}
@@ -290,6 +293,11 @@ export function PartyEntry({
               onChange={(event) => setName(event.target.value)}
             />
           </label>
+          <datalist id="party-name-suggestions">
+            {SUGGESTED_PLAYER_NAMES.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
           <label className="party-field" htmlFor="party-pin">
             {creating ? "Choose a party PIN" : "Party PIN"}
             <input
