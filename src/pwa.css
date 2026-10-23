@@ -1,0 +1,180 @@
+.pwa-controls {
+  width: min(100%, 600px);
+  margin: 13px auto 0;
+  padding: 10px 13px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--muted);
+}
+.pwa-controls > .pwa-status {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.pwa-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 10px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+.pwa-status > svg {
+  margin-top: 1px;
+}
+.pwa-status strong {
+  font-weight: 600;
+  color: var(--ink);
+}
+.pwa-status-ready > svg {
+  color: var(--green);
+}
+.pwa-status-error > svg {
+  color: var(--error);
+}
+.pwa-status-pending > svg {
+  color: var(--subtle);
+}
+.pwa-status-update {
+  padding: 8px 10px;
+  border: 1px solid var(--gold);
+  border-radius: 7px;
+  background: var(--gold-bg);
+  color: var(--ink);
+}
+.pwa-status-update > svg {
+  color: var(--gold);
+}
+.pwa-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-left: auto;
+}
+.pwa-button {
+  min-height: 44px;
+  padding: 8px 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 600;
+}
+.pwa-button:hover:not(:disabled) {
+  border-color: var(--green-border);
+  background: var(--surface-active);
+}
+.pwa-install-button {
+  border-color: var(--green-border);
+  background: var(--green-bg);
+  color: var(--green);
+}
+.pwa-install-button:hover:not(:disabled) {
+  background: var(--green-hover);
+}
+.pwa-help {
+  display: grid;
+  gap: 16px;
+}
+.pwa-help .modal-actions {
+  margin-top: 4px;
+}
+.pwa-help-installed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--green);
+}
+.pwa-help-section {
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-soft);
+}
+.pwa-help-section h3 {
+  font-size: 13px;
+  font-weight: 600;
+}
+.pwa-native-install {
+  width: 100%;
+  margin-top: 12px;
+}
+.pwa-help-or,
+.pwa-help-note {
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+.pwa-help-or {
+  margin-top: 12px;
+}
+.pwa-help-note {
+  margin-top: 10px;
+}
+.pwa-steps {
+  margin: 10px 0 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 7px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+.pwa-steps strong {
+  font-weight: 600;
+  color: var(--ink);
+}
+.pwa-steps svg {
+  vertical-align: -2px;
+  color: var(--ink);
+}
+.pwa-caveats {
+  display: flex;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid var(--warning-border);
+  border-radius: 7px;
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+.pwa-caveats > svg {
+  margin-top: 2px;
+}
+.pwa-caveats ul {
+  margin: 0;
+  padding-left: 15px;
+  display: grid;
+  gap: 5px;
+  font-size: 11px;
+  line-height: 1.7;
+}
+@media (max-width: 600px) {
+  .pwa-actions {
+    width: 100%;
+    margin-left: 0;
+  }
+  .pwa-actions > .pwa-button {
+    flex: 1 1 0;
+  }
+}
+@media (max-width: 360px) {
+  .pwa-controls {
+    padding: 10px;
+  }
+  .pwa-button {
+    padding: 8px;
+  }
+  .pwa-help-section {
+    padding: 13px 12px;
+  }
+}

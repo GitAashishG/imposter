@@ -19,6 +19,7 @@ import { PlayModeSwitch } from "./PlayModeSwitch";
 import { ThemeToggle } from "./Appearance";
 import { DeviceOptions } from "./DeviceOptions";
 import { HistoryPanel } from "./HistoryPanel";
+import { PwaControls } from "./PwaControls";
 
 export default function App({ onParty }: { onParty: () => void }) {
   const [preferences, setPreferences] = useState(loadPreferences);
@@ -120,6 +121,7 @@ export default function App({ onParty }: { onParty: () => void }) {
         }}
       />
       <DeviceOptions active={deviceActive} turnKey={turnKey} />
+      <PwaControls gameActive={playing && state.phase !== "final"} />
       <div className="local-party-bar" aria-label="Local party">
         <button className="secondary-button" onClick={() => showModal("history")}>
           <History size={16} /> Party history & totals

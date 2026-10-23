@@ -13,7 +13,13 @@
 }
 body {
   margin: 0;
-  min-width: 320px;
+  /* Keep content clear of notches/home indicators in installed full-screen use
+     while the content box itself never drops below 320px. */
+  min-width: calc(
+    320px + env(safe-area-inset-left, 0px) + env(safe-area-inset-right, 0px)
+  );
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+    env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
 }
 button,
 input,
@@ -1303,8 +1309,10 @@ select {
 /* Modal and help */
 .modal {
   position: fixed;
-  width: min(540px, calc(100% - 32px));
-  max-height: calc(100dvh - 60px);
+  inset: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+    env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  width: min(540px, calc(100% - 32px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
+  max-height: calc(100dvh - 60px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
   border: 1px solid var(--line);
   border-radius: 15px;
   padding: 27px;

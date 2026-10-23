@@ -7,6 +7,7 @@ import "@fontsource/noto-sans-devanagari/400.css";
 import "@fontsource/noto-sans-devanagari/600.css";
 import RootApp from "./RootApp";
 import { ThemeProvider } from "./Appearance";
+import { PwaProvider } from "./pwa";
 import "./theme.css";
 import "./styles.css";
 import "./appearance.css";
@@ -15,7 +16,9 @@ import "./roadmap.css";
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ThemeProvider>
-      <RootApp />
+      <PwaProvider>
+        <RootApp />
+      </PwaProvider>
     </ThemeProvider>
   </React.StrictMode>,
 );

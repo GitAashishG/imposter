@@ -10,6 +10,25 @@ Use the **moon/sun button** in either header to change light or dark mode. The s
 
 Open **This phone’s options** below the mode selector for device-specific comforts. **Keep screen awake while playing** is opt-in, requests a screen wake lock only during an active game, releases it in setup, round results, final standings, or when the page is hidden, and tries again when an active page returns. A browser or battery-saving policy may decline it; the actual status and a retry action are shown. **Vibrate when it’s my clue turn** is also opt-in, with one short vibration request per new clue turn and a test button. Unsupported APIs are disabled with an explanation. Browser acceptance does not guarantee physical vibration; hardware, silent mode, and platform support still apply.
 
+## Install and play offline
+
+Open the published HTTPS site and stay connected until **Offline Pass & Play ready** appears below the mode selector. The production service worker saves the static app, all bilingual word packs, bundled fonts, and icons. Pass & Play can then launch and complete games without a connection. Browser storage can be cleared or evicted; open online again if offline readiness is lost.
+
+- **Android / supported desktop browsers:** choose **Install app** in Ko Ho. If the browser offers a native install prompt, confirm it; otherwise follow the browser-menu **Install app / Add to Home screen** guidance. Installation support varies by browser.
+- **iPhone / iPad:** open Ko Ho in Safari, choose **Share** (or **More → Share**), then **Add to Home Screen**. Leave **Open as Web App** on if shown, tap **Add**, and launch the icon. **Offline tips** contains the same instructions.
+- **Own Phones still requires internet**, including in the installed app. Its existing saved-seat reconnection remains authoritative; no room snapshots, roles, votes, guesses, history, admin pages, or OAuth responses enter the service-worker cache. Offline actions are not queued or replayed. This does not change the existing room-token storage described below.
+- **Installation does not save an unfinished Pass & Play game.** Closing or refreshing still loses that in-memory match; completed history and preferences survive in the same browser storage. An installed app may use storage separate from its browser, so do not assume names, history, or an Own Phones seat transfer automatically. Keep using the same app/browser for a saved seat; never put private credentials into installation links.
+
+**Updates never reload an open game.** A new version downloads in the background, then waits until **every Ko Ho tab and installed-app window is closed** before activating. An idle setup/lobby/final screen shows **Update ready** with these steps. Finish ongoing games first, close all windows, then reopen. The install/offline/update panel is hidden during active rounds and between-round results; an asynchronous multiplayer start also dismisses open installation guidance. Do not refresh an unfinished shared-phone game to apply an update.
+
+Manifest identity, launch URL, scope, icon paths, and worker registration follow Vite’s resolved deployment base, including the Pages workflow’s `/imposter/`. The custom worker precaches static files only and limits its offline navigation fallback to the app entry (`/imposter/` or `/imposter/index.html`, including invitation/mode query parameters). Other paths and backend/admin/OAuth requests remain network-only. It has no forced-activation message handler, client claiming, runtime response cache, or background action queue.
+
+PWA registration is production-only: use `npm run build` and `npm run preview` to exercise it on localhost. A LAN HTTP development URL is not a secure context for installing an offline service worker; use the published HTTPS URL on phones. Ordinary Vite development does not install a worker. For deployment/update checks, use the existing gated build rather than manually publishing `dist/` from a differently configured preview.
+
+### Phone verification
+
+On an actual iPhone and Android phone, install from the published site, launch the icon, wait for offline readiness, then enable airplane mode and finish a Pass & Play game. Check both themes, notches/home indicators, Nepali text, and private-role concealment after backgrounding. Restore connectivity and confirm an Own Phones saved seat reconnects without replaying a vote. With two app windows open, verify an update stays pending while either remains open and is applied only after both close. These hardware/browser installation checks are separate from desktop Chromium mobile-layout and service-worker verification.
+
 ## Run locally
 
 Requires Node.js 22.12+. Automated checks also require Bun 1.4.2 or newer.
@@ -22,7 +41,7 @@ npm run dev
 Open the local URL printed by Vite. Pass & Play works without a backend; phones on the same Wi-Fi can use Vite’s network URL. The development server binds to your network, so use a trusted network. For Own Phones development, start the local referee and configure its URL as described below.
 
 ```sh
-npm run build          # Type-check frontend/backend and build dist/
+npm run build          # Type-check frontend/backend/service worker and build dist/
 npm run preview        # Serve the production frontend locally
 npm test               # Run deterministic game, history, room and security tests
 npm run test:integration # Exercise real HTTP/WebSocket clients in disposable local rooms
@@ -220,6 +239,8 @@ A cryptographically random player token is saved in local storage under its back
 - `src/theme.css`, `src/appearance.css`: light/dark palette and global controls
 - `src/GameOptions.tsx`: shared optional rule controls
 - `src/DeviceOptions.tsx`: opt-in wake locks and turn vibration with capability/status handling
+- `src/pwa.tsx`, `src/PwaControls.tsx`, `src/pwa.css`: production worker lifecycle, explicit install guidance, offline readiness, and non-interrupting update notices
+- `service-worker/sw.ts`, `service-worker/tsconfig.json`, `vite.config.ts`: isolated worker typing, static-only precache, entry-only offline navigation, and deployment-scoped manifest generation
 - `src/DiscussionTime.tsx`: shared accessible 1–15-minute control
 - `src/history.ts`, `src/HistoryPanel.tsx`, `src/history.test.ts`: bounded completed games, retained-game totals, and UI
 - `src/InviteLink.tsx`, `src/clipboard.ts`, `src/party/joining.ts`: PIN-bearing/PIN-free QR invitations, native sharing, copy controls, PIN and room-code formatting

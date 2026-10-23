@@ -18,6 +18,7 @@ import { DeviceOptions } from "../DeviceOptions";
 import { PlayModeSwitch } from "../PlayModeSwitch";
 import { ThemeToggle } from "../Appearance";
 import { HistoryPanel } from "../HistoryPanel";
+import { PwaControls } from "../PwaControls";
 import { InviteLink } from "../InviteLink";
 import { PARTY_API_URL, useParty } from "./useParty";
 import { formatRecoveryCode, generatePin } from "./joining";
@@ -368,6 +369,7 @@ export default function PartyApp({ onLocal, roomCode, onRoomChange, initialPin }
         }}
       />
       <DeviceOptions active={privatePhase} turnKey={turnKey} />
+      <PwaControls gameActive={!!snapshot && snapshot.phase !== "lobby" && snapshot.phase !== "final"} />
 
       <main className="party-main" tabIndex={-1} aria-label="Party game">
         {party.notice && (
