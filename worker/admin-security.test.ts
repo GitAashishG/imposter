@@ -158,11 +158,25 @@ describe("OAuth state, browser binding and S256 PKCE", () => {
     expect(await pkceVerifier(flow.state, flow.binding)).toBe(flow.verifier);
     expect(await pkceVerifier(flow.state, makeToken())).not.toBe(flow.verifier);
   });
+  test("accepts GitHub issuer-identified success and denial callbacks", () => {
+    const issuer = encodeURIComponent("https://github.com/login/oauth");
+    expect(oauthCallbackParameters(new URL(`${origin}/admin/auth/callback?code=github-code&iss=${issuer}&state=${token}`))).toEqual({ state: token, code: "github-code" });
+    expect(oauthCallbackParameters(new URL(`${origin}/admin/auth/callback?error=access_denied&iss=${issuer}&state=${token}`))).toEqual({ state: token, code: null });
+  });
+  test("rejects missing, foreign, or repeated authorization issuers", () => {
+    for (const issuer of [null, "", "https://github.com", "https://github.com/login/oauth/", "https://github.com.evil.example/login/oauth"]) {
+      const callback = new URL(`${origin}/admin/auth/callback?state=${token}&code=github-code`);
+      if (issuer !== null) callback.searchParams.set("iss", issuer);
+      expect(() => oauthCallbackParameters(callback)).toThrow(AdminError);
+    }
+    const repeated = new URL(`${origin}/admin/auth/callback?state=${token}&error=access_denied`);
+    repeated.searchParams.append("iss", "https://github.com/login/oauth");
+    repeated.searchParams.append("iss", "https://github.com/login/oauth");
+    expect(() => oauthCallbackParameters(repeated)).toThrow(AdminError);
+  });
   test("callback rejects repeated/extra parameters and never follows caller redirects", () => {
-    expect(oauthCallbackParameters(new URL(origin + "/admin/auth/callback?state=" + token + "&code=github-code"))).toEqual({ state: token, code: "github-code" });
-    expect(oauthCallbackParameters(new URL(origin + "/admin/auth/callback?state=" + token + "&error=access_denied"))).toEqual({ state: token, code: null });
     for (const suffix of ["state=x&code=c", `state=${token}&state=${token}&code=c`, `state=${token}&code=c&code=d`, `state=${token}&code=c&redirect_uri=https://evil.example`, `state=${token}&code=c&error=denied`, `state=${token}`, `state=${token}&code=%0D%0Ainjected`]) {
-      expect(() => oauthCallbackParameters(new URL(origin + "/admin/auth/callback?" + suffix))).toThrow(AdminError);
+      expect(() => oauthCallbackParameters(new URL(origin + "/admin/auth/callback?iss=https%3A%2F%2Fgithub.com%2Flogin%2Foauth&" + suffix))).toThrow(AdminError);
     }
   });
 });

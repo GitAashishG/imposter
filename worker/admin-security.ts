@@ -160,13 +160,13 @@ export async function newOAuthNonce(origin: string, now: number): Promise<{ stat
 }
 
 export function oauthCallbackParameters(url: URL): { state: string; code: string | null } {
-  const allowed = new Set(["state", "code", "error", "error_description", "error_uri"]);
+  const allowed = new Set(["state", "code", "iss", "error", "error_description", "error_uri"]);
   for (const key of url.searchParams.keys()) {
     if (!allowed.has(key) || url.searchParams.getAll(key).length !== 1) throw new AdminError("OAUTH_STATE_INVALID", "Restart GitHub sign-in from the administration page.", 400);
   }
   const state = url.searchParams.get("state");
   const code = url.searchParams.get("code");
-  if (!state || !OPAQUE_TOKEN.test(state) || (code !== null && (code.length < 1 || code.length > 1024 || /[\s\x00-\x1f\x7f]/.test(code)))) {
+  if (url.searchParams.get("iss") !== "https://github.com/login/oauth" || !state || !OPAQUE_TOKEN.test(state) || (code !== null && (code.length < 1 || code.length > 1024 || /[\s\x00-\x1f\x7f]/.test(code)))) {
     throw new AdminError("OAUTH_STATE_INVALID", "Restart GitHub sign-in from the administration page.", 400);
   }
   if ((!code && !url.searchParams.has("error")) || (code && url.searchParams.has("error"))) throw new AdminError("OAUTH_STATE_INVALID", "Restart GitHub sign-in from the administration page.", 400);

@@ -167,6 +167,8 @@ GitHub CLI is sufficient for repository/deployment work; installing a GitHub MCP
 
 Until both app credentials are configured, administration fails closed and shows setup guidance; public play remains available. Sign-in uses browser-bound, single-use state and S256 PKCE, hash-only server credentials, an eight-hour `Secure`/`HttpOnly` session, and CSRF/origin checks for mutations. Anonymous fresh sign-ins are bounded without preventing an existing browser from renewing its pending flow. Logout revokes the admin session. Local rule and denial checks do not substitute for a real provider authorization.
 
+GitHub callbacks include the RFC 9207 `iss` parameter. The server requires an exact match with GitHub’s [published authorization-server issuer](https://github.com/.well-known/oauth-authorization-server/login/oauth), `https://github.com/login/oauth`, while still validating the single-use state, browser cookie, expiry, and PKCE flow. Missing, foreign, or repeated issuers are rejected. After a failed or interrupted sign-in, restart from `/admin` in the same browser instead of refreshing or reusing a callback URL; callback URLs contain temporary authorization data and are not bookmarks.
+
 The dashboard shows only room codes, status/phase, player and connection counts, completion counts, timestamps, expiry, and cleanup state—not names, secret words, roles, ballots, PINs, recovery codes, or player tokens. It supports:
 
 - **Close room:** type the exact room code to confirm. Only that current party ends, its personal storage and credentials are cleared, and other rooms continue.
