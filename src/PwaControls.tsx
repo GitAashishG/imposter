@@ -112,7 +112,7 @@ export function PwaControls({ gameActive }: { gameActive: boolean }) {
             {pwa.installed ? (
               <p className="pwa-help-installed">
                 <CircleCheck size={15} aria-hidden="true" />
-                You’re using the installed Ko Ho app.
+                Ko Ho is installed on this device.
               </p>
             ) : (
               <section
